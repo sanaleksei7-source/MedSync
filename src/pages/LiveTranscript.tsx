@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { docs, type DocType, type Section } from "../data/script";
 import type { DraftSource } from "./Appointment";
+import { api } from "../api";
 
 // Минимальные типы Web Speech API (в lib.dom TypeScript их нет).
 interface SRResult { isFinal: boolean; 0: { transcript: string } }
@@ -88,13 +89,12 @@ export default function LiveTranscript({
     setBusy(true);
     setError("");
     try {
-      const r = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ docTitle: docs[type].title, sectionTitles: docs[type].sections.map((s) => s.title), lines }),
+      const data = await api<{ sections?: Section[] }>("POST", "/api/extract", {
+        docTitle: docs[type].title,
+        sectionTitles: docs[type].sections.map((s) => s.title),
+        lines,
       });
-      const data = (await r.json()) as { sections?: Section[]; error?: string };
-      if (!r.ok || !data.sections) throw new Error(data.error ?? "Не удалось составить документ");
+      if (!data.sections) throw new Error("Не удалось составить документ");
       if (data.sections.length === 0) throw new Error("В разговоре не нашлось фактов для этого документа");
       onDraft(type, { lines, sections: data.sections });
     } catch (e) {

@@ -53,4 +53,21 @@ export function signBlockers(
   };
 }
 
-export const canSign = (b: SignBlockers) => b.unchecked.length === 0 && b.allergy.length === 0;
+/** Итоговый текст документа после решений врача: убранные факты исключены, исправленные заменены. */
+export function finalizeSections(
+  sections: Section[],
+  decisions: Decisions,
+  isVisible: (ids: number[]) => boolean = () => true,
+): { title: string; lines: string[] }[] {
+  return sections
+    .map((sec, si) => ({
+      title: sec.title,
+      lines: sec.statements
+        .map((st, i) => ({ st, d: decisions[keyOf(si, i)] }))
+        .filter(({ st, d }) => isVisible(st.sourceIds) && d?.action !== "removed")
+        .map(({ st, d }) => d?.text ?? st.text),
+    }))
+    .filter((s) => s.lines.length > 0);
+}
+
+export const canSign =(b: SignBlockers) => b.unchecked.length === 0 && b.allergy.length === 0;

@@ -17,7 +17,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 | Phase | Status | Done / total items | Notes |
 |---|---|---|---|
 | 0 — Governance and threat model | 🟡 In progress | 1 / 8 | Plan written; legal answers and threat model still missing |
-| 1 — Architecture decisions | ⬜ Not started | 0 / 8 | Blocked by the Phase 0 legal answers (data residency, ЭЦП, Tunduk) |
+| 1 — Architecture decisions | 🟡 Prototype started | 0 / 8 (5 partly, 3 blocked) | Login, roles, server-side rules and audit log prototyped on fictional data; speech, model, ЭЦП and Tunduk wait for the Phase 0 legal answers |
 | 2 — Secure implementation | 🟡 Started (partial) | 0 / 7 (7 partly) | Quick wins written and tested locally; CI not yet run on GitHub; no auth yet |
 | 3 — Verification | ⬜ Not started | 0 / 7 | Needs a staging environment and Phase 1–2 output |
 | 4 — Controlled pilot | ⬜ Not started | 0 / 3 | Only after the §5 gates |
@@ -34,23 +34,24 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 - 🚫 Lawyer-reviewed consent text and privacy notice (the current footer is only a demo disclaimer)
 
 ### Phase 1 — Architecture decisions
-- ⬜ Speech recognition inside the approved jurisdiction (replace the browser Web Speech API)
-- ⬜ Language-model hosting or processing agreement, plus de-identification before sending
-- ⬜ Backend and database with TLS, encryption at rest, tenant isolation, backups and a restore test
-- ⬜ Doctor login with MFA
-- ⬜ Server-side RBAC and "treating relationship" check; break-glass access with alerts
-- 🚫 Real ЭЦП integration (replace the demo SHA-256 signature)
-- 🚫 Tunduk integration design (mutual TLS, signed messages, replay protection)
-- ⬜ Tamper-evident, persisted audit log (today only a UI change log exists)
+Details and decision records: `docs/PHASE1_ARCHITECTURE.md`.
+- 🚫 Speech recognition inside the approved jurisdiction (replace the browser Web Speech API) — decision record D1 written; blocked by the data-residency answer
+- 🚫 Language-model hosting or processing agreement, plus de-identification before sending — decision record D2 written; blocked by the legal answer on cross-border transfer
+- 🟡 Backend and database — done: HTTP API with authenticated routes (login, session, sign, extract, audit verify). Missing: a real database, encryption at rest, backups and restore test, tenant isolation, TLS (storage is currently JSON files)
+- 🟡 Doctor login with MFA — done (prototype, fictional users): scrypt passwords, TOTP second factor checked against the RFC 6238 test vector, lockout after 5 failures, HttpOnly SameSite=Strict sessions with idle and absolute expiry, no account enumeration. Missing: independent review, password change/reset, MFA enrolment, user management; decision D6 (own accounts vs a state identity service)
+- 🟡 Server-side RBAC and "treating relationship" check — done: doctor / admin / auditor roles, doctors reach only assigned patients, tested over HTTP. Missing: break-glass access with alerts; patient data still ships in the web bundle
+- 🚫 Real ЭЦП integration — the signing step now sits behind a `Signer` interface; the current implementation is an HMAC demo with no legal force. Blocked by which scheme is accepted (D3)
+- 🚫 Tunduk integration design — decision record D4 written; blocked by the operator's specification and the agreement
+- 🟡 Tamper-evident, persisted audit log — done: append-only hash-chained file; editing, removal, reordering and truncation are detected; logs ids, actions and document hashes only (no medical text, names or ПИН); an auditor role can verify it. Missing: write-once external storage (a whole file plus its chain can still be replaced), retention rules, alerting
 
 ### Phase 2 — Secure implementation
 - 🟡 Secure SDLC — done: Dependabot config written (`.github/dependabot.yml`). Missing: branch protection and mandatory review on `main` (a GitHub repository setting the owner must switch on), signed releases
 - 🟡 CI gates — done and **green on GitHub** (2026-11-24, commit `4b23bf3`): `ci.yml` build, tests, secret/ПИН scan and `npm audit --audit-level=high` (22 s), and gitleaks (5 s). CodeQL was **dropped** on 2026-11-24 after it failed on its first run (likely needs paid GitHub Advanced Security on a private repository; cause not confirmed from the log), so there is currently **no automated code-vulnerability scan (SAST)**. Missing: a replacement SAST (for example Semgrep, or CodeQL if Advanced Security is bought), pinning actions to commit SHAs, SBOM, DAST
 - 🟡 Web hardening — done: strict CSP in the production build and in the preview server, plus `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`; verified in the browser with no console errors. Missing: HSTS and `frame-ancestors` on the real host, CSRF and cookie flags (no sessions exist yet)
-- 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in errors, Origin allow-list, Host check (DNS-rebinding), JSON-only content type, 10 requests/min per address, 2-minute request timeout, `no-store` and `nosniff` on responses. Missing: authentication and authorization (Phase 1), per-user quotas
+- 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in errors, Origin allow-list, Host check (DNS-rebinding), JSON-only content type, 10 requests/min per address, 2-minute request timeout, `no-store` and `nosniff` on responses. Now also: session authentication, role checks, per-user limit on model calls (10/min), required `X-Requested-With` header on POST (see Phase 1). Missing: quotas by clinic, a review of the auth code
 - 🟡 Secrets — done: `.env` is gitignored, `.env.example` committed, key never reaches the browser, `npm run scan` fails on API keys, private keys and ПИН-like numbers that are not the demo patients. Missing: secrets manager, rotation, separate keys per environment, a pre-commit hook
 - 🟡 LLM-specific controls — done: server-side sanitizer, transcript treated as data in the prompt, an attack and invention test set (7 fictional cases, including prompt injection) with a scorer and `npm run eval`. Missing: the eval has **never run against the real model** (needs an API key), output checks before signing, model/prompt version logging
-- 🟡 Clinical-safety logic — done: sign-blocking rules (unreviewed unsourced facts, unresolved allergy conflicts) moved into a tested, UI-independent module (`src/domain/rules.ts`). Missing: enforcement on a server, real drug database, hazard analysis
+- 🟡 Clinical-safety logic — done: sign-blocking rules (unreviewed unsourced facts, unresolved allergy conflicts) moved into a tested, UI-independent module (`src/domain/rules.ts`). Now also enforced on the server: `/api/sign` recomputes allergy conflicts from the transcript and re-checks unsourced facts, so a client cannot bypass them (integration-tested). Missing: server-held drafts (the text still comes from the client), real drug database, hazard analysis
 
 ### Phase 3 — Verification
 - ⬜ Automated SAST/DAST on staging, dependency, container and IaC scans
@@ -80,6 +81,9 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 - `npm run scan`: passes on the repository, and fails as intended on a planted fake API key and a planted ПИН-like number (2026-11-24)
 - Live API test with hostile requests: foreign `Origin` → 403, form content type → 415, 11th request in a minute → 429, GET → 404, no key → 503 with a clear message (2026-11-24). The Host-header check is covered by a unit test only, because the test client cannot forge a Host header
 - Production build served with the new headers: CSP present, app works end to end, no browser console errors (2026-11-24)
+- Integration test of the whole server in one process, 36 checks (login, lockout, no enumeration, cookie flags, CSRF headers, roles, patient assignment, sign blocking and success, audit privacy and tamper detection over the API, logout), no API key needed (2026-11-24)
+- Live smoke test against the running server (`npm run smoke`): doctor login 200; sign with allergy conflict 409; another doctor's patient 403; sign after removing the order 200; extract without a key returns a clear error; auditor verification of a 7-record chain ok (2026-11-24)
+- Browser: the app shows only the login form before sign-in, and a wrong password shows a generic error. **Not checked in the browser:** the signed-in screens and signing through the new API (no way to type the seeded fictional password into the page without exposing it); these are covered by the integration and smoke tests instead (2026-11-24)
 - GitHub Actions on `4b23bf3` (2026-11-24): CI build-test ✅ green, gitleaks ✅ green, CodeQL ❌ failed after 3 min (error text not read) → removed from the repository
 - Not yet verified: any SAST; the extraction call and `npm run eval` have never run against the real model (no API key available to development)
 
@@ -90,6 +94,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 | 2026-11-24 | Phase 2 quick wins: CI/CodeQL/Dependabot/gitleaks config, secret and ПИН scan, API guards, CSP and security headers, shared sign/allergy rules with tests, LLM attack test set |
 | 2026-11-24 | First GitHub run of the workflows: CI and gitleaks green, CodeQL failed |
 | 2026-11-24 | CodeQL workflow removed by decision; SAST gap recorded |
+| 2026-11-24 | Phase 1 prototype: login with TOTP, sessions, roles and patient assignment, server-side sign rules, hash-chained audit log, Signer interface, decision records D1–D7 (`docs/PHASE1_ARCHITECTURE.md`) |
 
 How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
 

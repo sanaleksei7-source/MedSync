@@ -4,6 +4,7 @@ import { patients } from "../data/patients";
 import { formatPin } from "../data/pin";
 import { findConflicts } from "../data/allergy";
 import LiveTranscript from "./LiveTranscript";
+import { api, ApiError } from "../api";
 import { addEntry, updateEntry } from "../data/history";
 import { blockingConflicts, keyOf, uncheckedKeys, type Action, type Decision } from "../domain/rules";
 
@@ -12,13 +13,6 @@ const plural = (n: number) =>
   n % 10 === 1 && n % 100 !== 11 ? "факт" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "факта" : "фактов";
 interface LogEntry { time: string; action: Action; before: string; after?: string }
 const actionLabel: Record<Action, string> = { kept: "Оставлено", removed: "Убрано", edited: "Исправлено" };
-
-const doctor = "Асанов Б. Т. (демо)";
-
-async function sha256(text: string) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 export interface DraftSource { lines: Line[]; sections: Section[] }
 
@@ -54,7 +48,8 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
   const doc = source?.sections ?? docs[type].sections;
   const total = doc.reduce((n, s) => n + s.statements.length, 0);
   const [stage, setStage] = useState<"review" | "signed" | "sent">("review");
-  const [sig, setSig] = useState<{ hash: string; time: string } | null>(null);
+  const [sig, setSig] = useState<{ hash: string; time: string; scheme: string; signer: string } | null>(null);
+  const [signError, setSignError] = useState("");
   const entryId = useRef(`h-${Date.now()}`);
   const [shown, setShown] = useState(source ? source.lines.length : 0);
   const [hot, setHot] = useState<number[]>([]);
@@ -141,10 +136,23 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
       stmtRefs.current[unchecked[0]]?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
-    const canonical = [docs[type].title, patient.pin, ...finalSections.flatMap((s) => [s.title, ...s.lines])].join("\n");
-    const hash = await sha256(canonical);
-    setSig({ hash, time: new Date().toLocaleString("ru-RU") });
-    addEntry({ id: entryId.current, patientName: patient.name, time: new Date().toISOString(), docLabel: docs[type].label, status: "signed", hash });
+    setSignError("");
+    try {
+      const r = await api<{ hash: string; signedAt: string; scheme: string; signer: string }>("POST", "/api/sign", {
+        patientId: patient.id,
+        docType: docs[type].title,
+        lines: transcript,
+        sections: doc,
+        decisions,
+        ackAllergy: ackAllergy,
+      });
+      setSig({ hash: r.hash, time: new Date(r.signedAt).toLocaleString("ru-RU"), scheme: r.scheme, signer: r.signer });
+      addEntry({ id: entryId.current, patientName: patient.name, time: r.signedAt, docLabel: docs[type].label, status: "signed", hash: r.hash });
+    } catch (e) {
+      // Сервер перепроверил правила и отказал — показываем причину, документ не подписан.
+      setSignError(e instanceof ApiError ? e.message : "Не удалось подписать документ");
+      return;
+    }
     setStage("signed");
   };
 
@@ -181,8 +189,9 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
             </div>
           ))}
           <div className="mt-4 border-t pt-3 text-xs text-slate-600">
-            <div className="font-medium text-teal-700">Подписано ЭЦП (демо — не имеет юридической силы)</div>
-            <div>Врач: {doctor}</div>
+            <div className="font-medium text-teal-700">Подписано (демо — НЕ электронная цифровая подпись, юридической силы не имеет)</div>
+            <div>Врач: {sig?.signer}</div>
+            <div>Схема: {sig?.scheme}</div>
             <div>Время: {sig?.time}</div>
             <div className="break-all font-mono">SHA-256: {sig?.hash}</div>
           </div>
@@ -320,6 +329,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
               </div>
             );
           })}
+          {signError && <p className="mb-1 text-sm text-red-600">{signError}</p>}
           {allergyWarn && <p className="mb-1 text-sm text-red-600">Сначала решите вопрос с аллергией</p>}
           {warn && <p className="mb-1 text-sm text-red-600">Сначала проверьте жёлтые факты</p>}
           <button
