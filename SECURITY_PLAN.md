@@ -6,6 +6,88 @@ Goal: bring MedSync from a fictional-data demo to a system that can be used with
 
 ---
 
+## Progress tracker
+
+**Last updated:** 2026-11-24 · **Overall:** Phase 0 in progress. No real-data release gate (§5) is met yet.
+
+Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs someone outside development)
+
+### Phase summary
+
+| Phase | Status | Done / total items | Notes |
+|---|---|---|---|
+| 0 — Governance and threat model | 🟡 In progress | 1 / 8 | Plan written; legal answers and threat model still missing |
+| 1 — Architecture decisions | ⬜ Not started | 0 / 8 | Blocked by the Phase 0 legal answers (data residency, ЭЦП, Tunduk) |
+| 2 — Secure implementation | 🟡 Started (partial) | 0 / 7 (3 partly) | A few controls exist from the demo build; no CI, no auth |
+| 3 — Verification | ⬜ Not started | 0 / 7 | Needs a staging environment and Phase 1–2 output |
+| 4 — Controlled pilot | ⬜ Not started | 0 / 3 | Only after the §5 gates |
+| 5 — Operate and re-certify | ⬜ Not started | 0 / 5 | |
+
+### Phase 0 — Governance and threat model
+- ✅ Security plan written and committed (`SECURITY_PLAN.md`)
+- ⬜ Appoint a security owner and a data-protection contact
+- 🚫 Legal confirmations (§3): data residency, consent, ЭЦП scheme, Tunduk terms, retention, who may audit
+- ⬜ Data-flow diagram of every place patient data goes
+- ⬜ STRIDE threat model per data flow, and risk register with owners
+- ⬜ Data classification and log policy (no patient content, no ПИН in logs)
+- 🚫 Hosting model decision (depends on the legal answers)
+- 🚫 Lawyer-reviewed consent text and privacy notice (the current footer is only a demo disclaimer)
+
+### Phase 1 — Architecture decisions
+- ⬜ Speech recognition inside the approved jurisdiction (replace the browser Web Speech API)
+- ⬜ Language-model hosting or processing agreement, plus de-identification before sending
+- ⬜ Backend and database with TLS, encryption at rest, tenant isolation, backups and a restore test
+- ⬜ Doctor login with MFA
+- ⬜ Server-side RBAC and "treating relationship" check; break-glass access with alerts
+- 🚫 Real ЭЦП integration (replace the demo SHA-256 signature)
+- 🚫 Tunduk integration design (mutual TLS, signed messages, replay protection)
+- ⬜ Tamper-evident, persisted audit log (today only a UI change log exists)
+
+### Phase 2 — Secure implementation
+- ⬜ Secure SDLC: branch protection on `main`, mandatory review, signed releases
+- ⬜ CI gates: tests, type-check, SAST, dependency scan, secret scan, SBOM
+- ⬜ Web hardening: CSP, HSTS, frame protection, CORS, CSRF, cookies
+- 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in error messages. Missing: authentication, authorization, rate limiting, per-user quotas
+- 🟡 Secrets — done: `.env` is gitignored, `.env.example` committed, key never reaches the browser. Missing: secrets manager, rotation, separate keys per environment
+- 🟡 LLM-specific controls — done: server-side sanitizer (unknown sections and source IDs dropped, unsourced facts kept and flagged), prompt tells the model to treat the transcript as data, extraction test. Missing: output checks before signing, model/prompt version logging, red-team regression set
+- 🟡 Clinical-safety logic — done: signing blocked in the UI on unreviewed unsourced facts and on unresolved allergy conflicts (demo drug list). Missing: server-side enforcement, real drug database, hazard analysis
+
+### Phase 3 — Verification
+- ⬜ Automated SAST/DAST on staging, dependency, container and IaC scans
+- ⬜ Authorization matrix, IDOR, session, MFA, audit-tamper and replay tests
+- ⬜ LLM red-teaming: prompt injection, invented diagnoses or doses, prompt exfiltration, Russian/Kyrgyz/mixed input
+- 🚫 Independent penetration test and re-test (external firm)
+- 🚫 Independent code review of auth, signing, audit log and data access
+- ⬜ Privacy review / DPIA, signed off by the data-protection contact and the lawyer
+- ⬜ Resilience tests: backup restore, failover, DoS behaviour, degraded mode
+
+### Phase 4 — Controlled pilot
+- ⬜ One-clinic pilot with real data only after Phase 3 sign-off and legal approval
+- ⬜ Tested incident-response plan and security monitoring
+- ⬜ Pilot metrics and stop criteria in use
+
+### Phase 5 — Operate and re-certify
+- ⬜ Vulnerability management with SLAs
+- ⬜ Annual and change-triggered penetration tests
+- ⬜ Quarterly access reviews, key rotation, backup restore tests, tabletop exercise
+- ⬜ Change control: regression set before every model, prompt or drug-database change
+- ⬜ Clinic staff security training
+
+### Evidence collected so far
+- `npm audit`: 0 known vulnerabilities (2026-11-24)
+- Code search: no `eval`, `innerHTML` or `dangerouslySetInnerHTML` in `src/` or `server/` (2026-11-24)
+- Tests passing: ПИН format (`npm test`), model-output sanitizer (`npm test`)
+- Not yet verified: the extraction call to the real model has never run (no API key available to development)
+
+### Changelog
+| Date | Change |
+|---|---|
+| 2026-11-24 | Plan written; progress tracker added; Phase 0 started |
+
+How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
+
+---
+
 ## 1. Honest current state (as of commit `abda24a`)
 
 MedSync today is a **demo**. It must not be used with real patient data.
