@@ -45,7 +45,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 
 ### Phase 2 — Secure implementation
 - 🟡 Secure SDLC — done: Dependabot config written (`.github/dependabot.yml`). Missing: branch protection and mandatory review on `main` (a GitHub repository setting the owner must switch on), signed releases
-- 🟡 CI gates — done (written, **not yet run on GitHub**): `ci.yml` (build, tests, secret/ПИН scan, `npm audit --audit-level=high`), gitleaks, CodeQL weekly and on every push. Missing: first green run, pinning actions to commit SHAs, SBOM, DAST
+- 🟡 CI gates — done and **green on GitHub** (2026-11-24, commit `4b23bf3`): `ci.yml` build, tests, secret/ПИН scan and `npm audit --audit-level=high` (22 s), and gitleaks (5 s). CodeQL was **dropped** on 2026-11-24 after it failed on its first run (likely needs paid GitHub Advanced Security on a private repository; cause not confirmed from the log), so there is currently **no automated code-vulnerability scan (SAST)**. Missing: a replacement SAST (for example Semgrep, or CodeQL if Advanced Security is bought), pinning actions to commit SHAs, SBOM, DAST
 - 🟡 Web hardening — done: strict CSP in the production build and in the preview server, plus `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`; verified in the browser with no console errors. Missing: HSTS and `frame-ancestors` on the real host, CSRF and cookie flags (no sessions exist yet)
 - 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in errors, Origin allow-list, Host check (DNS-rebinding), JSON-only content type, 10 requests/min per address, 2-minute request timeout, `no-store` and `nosniff` on responses. Missing: authentication and authorization (Phase 1), per-user quotas
 - 🟡 Secrets — done: `.env` is gitignored, `.env.example` committed, key never reaches the browser, `npm run scan` fails on API keys, private keys and ПИН-like numbers that are not the demo patients. Missing: secrets manager, rotation, separate keys per environment, a pre-commit hook
@@ -80,13 +80,16 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 - `npm run scan`: passes on the repository, and fails as intended on a planted fake API key and a planted ПИН-like number (2026-11-24)
 - Live API test with hostile requests: foreign `Origin` → 403, form content type → 415, 11th request in a minute → 429, GET → 404, no key → 503 with a clear message (2026-11-24). The Host-header check is covered by a unit test only, because the test client cannot forge a Host header
 - Production build served with the new headers: CSP present, app works end to end, no browser console errors (2026-11-24)
-- Not yet verified: the GitHub Actions workflows have never run; the extraction call and `npm run eval` have never run against the real model (no API key available to development)
+- GitHub Actions on `4b23bf3` (2026-11-24): CI build-test ✅ green, gitleaks ✅ green, CodeQL ❌ failed after 3 min (error text not read) → removed from the repository
+- Not yet verified: any SAST; the extraction call and `npm run eval` have never run against the real model (no API key available to development)
 
 ### Changelog
 | Date | Change |
 |---|---|
 | 2026-11-24 | Plan written; progress tracker added; Phase 0 started |
 | 2026-11-24 | Phase 2 quick wins: CI/CodeQL/Dependabot/gitleaks config, secret and ПИН scan, API guards, CSP and security headers, shared sign/allergy rules with tests, LLM attack test set |
+| 2026-11-24 | First GitHub run of the workflows: CI and gitleaks green, CodeQL failed |
+| 2026-11-24 | CodeQL workflow removed by decision; SAST gap recorded |
 
 How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
 
