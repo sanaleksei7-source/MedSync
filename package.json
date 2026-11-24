@@ -6,14 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsx src/data/pin.test.ts"
+    "test": "tsx src/data/pin.test.ts && tsx server/extract.test.ts",
+    "server": "tsx --env-file=.env server/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",

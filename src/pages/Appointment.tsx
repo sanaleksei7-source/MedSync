@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { docs, transcript, type DocType } from "../data/script";
+import { docs, transcript as demoTranscript, type DocType, type Line, type Section } from "../data/script";
 import { patients } from "../data/patients";
 import { formatPin } from "../data/pin";
 import { findConflicts } from "../data/allergy";
@@ -23,10 +23,14 @@ async function sha256(text: string) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export interface DraftSource { lines: Line[]; sections: Section[] }
+
 export default function Appointment() {
   const [docType, setDocType] = useState<DocType | null>(null);
   const [live, setLive] = useState(false);
-  if (live) return <LiveTranscript onBack={() => setLive(false)} />;
+  const [draft, setDraft] = useState<{ type: DocType; source: DraftSource } | null>(null);
+  if (draft) return <Session key="live" type={draft.type} source={draft.source} onBack={() => setDraft(null)} />;
+  if (live) return <LiveTranscript onBack={() => setLive(false)} onDraft={(type, source) => setDraft({ type, source })} />;
   if (!docType)
     return (
       <div className="space-y-4">
@@ -48,13 +52,14 @@ export default function Appointment() {
   return <Session key={docType} type={docType} onBack={() => setDocType(null)} />;
 }
 
-function Session({ type, onBack }: { type: DocType; onBack: () => void }) {
-  const doc = docs[type].sections;
+function Session({ type, onBack, source }: { type: DocType; onBack: () => void; source?: DraftSource }) {
+  const transcript = source?.lines ?? demoTranscript;
+  const doc = source?.sections ?? docs[type].sections;
   const total = doc.reduce((n, s) => n + s.statements.length, 0);
   const [stage, setStage] = useState<"review" | "signed" | "sent">("review");
   const [sig, setSig] = useState<{ hash: string; time: string } | null>(null);
   const entryId = useRef(`h-${Date.now()}`);
-  const [shown, setShown] = useState(0);
+  const [shown, setShown] = useState(source ? source.lines.length : 0);
   const [hot, setHot] = useState<number[]>([]);
   const [decisions, setDecisions] = useState<Record<string, Decision>>({});
   const [log, setLog] = useState<LogEntry[]>([]);

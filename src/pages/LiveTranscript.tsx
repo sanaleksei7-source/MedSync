@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { docs, type DocType, type Section } from "../data/script";
+import type { DraftSource } from "./Appointment";
 
 // Минимальные типы Web Speech API (в lib.dom TypeScript их нет).
 interface SRResult { isFinal: boolean; 0: { transcript: string } }
@@ -21,7 +23,15 @@ const Ctor: (new () => SR) | undefined =
 
 interface Line { id: number; speaker: "Врач" | "Пациент"; text: string }
 
-export default function LiveTranscript({ onBack }: { onBack: () => void }) {
+export default function LiveTranscript({
+  onBack,
+  onDraft,
+}: {
+  onBack: () => void;
+  onDraft: (type: DocType, source: DraftSource) => void;
+}) {
+  const [type, setType] = useState<DocType>("osmotr");
+  const [busy, setBusy] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
   const [interim, setInterim] = useState("");
   const [listening, setListening] = useState(false);
@@ -73,6 +83,27 @@ export default function LiveTranscript({ onBack }: { onBack: () => void }) {
     setListening(true);
   };
 
+  const makeDraft = async () => {
+    stop();
+    setBusy(true);
+    setError("");
+    try {
+      const r = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ docTitle: docs[type].title, sectionTitles: docs[type].sections.map((s) => s.title), lines }),
+      });
+      const data = (await r.json()) as { sections?: Section[]; error?: string };
+      if (!r.ok || !data.sections) throw new Error(data.error ?? "Не удалось составить документ");
+      if (data.sections.length === 0) throw new Error("В разговоре не нашлось фактов для этого документа");
+      onDraft(type, { lines, sections: data.sections });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка сети. Запущен ли сервер (npm run server)?");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => () => { wantOn.current = false; rec.current?.stop(); }, []);
 
   return (
@@ -83,8 +114,7 @@ export default function LiveTranscript({ onBack }: { onBack: () => void }) {
       </div>
       <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
         Распознавание выполняет сам браузер: в Chrome и Edge аудио отправляется на серверы Google/Microsoft.
-        Не используйте с реальными пациентами. Заполнение документа по живой записи пока не реализовано —
-        для этого нужна модель, которая достаёт факты и привязывает их к репликам.
+        Не используйте с реальными пациентами. Кнопка «Составить документ» отправляет расшифровку модели Claude (Anthropic) через локальный сервер — тоже только для вымышленных данных. Нужен ANTHROPIC_API_KEY (см. README).
       </div>
       {!Ctor ? (
         <p className="text-red-600">Этот браузер не поддерживает распознавание речи. Откройте демо в Chrome или Edge.</p>
@@ -121,6 +151,16 @@ export default function LiveTranscript({ onBack }: { onBack: () => void }) {
               ))}
               {interim && <li className="text-slate-400">{interim}…</li>}
             </ol>
+            {lines.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                <select value={type} onChange={(e) => setType(e.target.value as DocType)} className="rounded border px-2 py-1">
+                  {(Object.keys(docs) as DocType[]).map((t) => <option key={t} value={t}>{docs[t].label}</option>)}
+                </select>
+                <button disabled={busy} onClick={makeDraft} className="rounded bg-teal-600 px-3 py-1 text-white disabled:opacity-50">
+                  {busy ? "Составляю…" : "Составить документ"}
+                </button>
+              </div>
+            )}
             {lines.length > 0 && (
               <button
                 className="mt-3 rounded border px-3 py-1 text-sm"
