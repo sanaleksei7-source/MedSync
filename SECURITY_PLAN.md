@@ -18,7 +18,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 |---|---|---|---|
 | 0 — Governance and threat model | 🟡 In progress | 1 / 8 | Plan written; legal answers and threat model still missing |
 | 1 — Architecture decisions | ⬜ Not started | 0 / 8 | Blocked by the Phase 0 legal answers (data residency, ЭЦП, Tunduk) |
-| 2 — Secure implementation | 🟡 Started (partial) | 0 / 7 (3 partly) | A few controls exist from the demo build; no CI, no auth |
+| 2 — Secure implementation | 🟡 Started (partial) | 0 / 7 (7 partly) | Quick wins written and tested locally; CI not yet run on GitHub; no auth yet |
 | 3 — Verification | ⬜ Not started | 0 / 7 | Needs a staging environment and Phase 1–2 output |
 | 4 — Controlled pilot | ⬜ Not started | 0 / 3 | Only after the §5 gates |
 | 5 — Operate and re-certify | ⬜ Not started | 0 / 5 | |
@@ -44,13 +44,13 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 - ⬜ Tamper-evident, persisted audit log (today only a UI change log exists)
 
 ### Phase 2 — Secure implementation
-- ⬜ Secure SDLC: branch protection on `main`, mandatory review, signed releases
-- ⬜ CI gates: tests, type-check, SAST, dependency scan, secret scan, SBOM
-- ⬜ Web hardening: CSP, HSTS, frame protection, CORS, CSRF, cookies
-- 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in error messages. Missing: authentication, authorization, rate limiting, per-user quotas
-- 🟡 Secrets — done: `.env` is gitignored, `.env.example` committed, key never reaches the browser. Missing: secrets manager, rotation, separate keys per environment
-- 🟡 LLM-specific controls — done: server-side sanitizer (unknown sections and source IDs dropped, unsourced facts kept and flagged), prompt tells the model to treat the transcript as data, extraction test. Missing: output checks before signing, model/prompt version logging, red-team regression set
-- 🟡 Clinical-safety logic — done: signing blocked in the UI on unreviewed unsourced facts and on unresolved allergy conflicts (demo drug list). Missing: server-side enforcement, real drug database, hazard analysis
+- 🟡 Secure SDLC — done: Dependabot config written (`.github/dependabot.yml`). Missing: branch protection and mandatory review on `main` (a GitHub repository setting the owner must switch on), signed releases
+- 🟡 CI gates — done (written, **not yet run on GitHub**): `ci.yml` (build, tests, secret/ПИН scan, `npm audit --audit-level=high`), gitleaks, CodeQL weekly and on every push. Missing: first green run, pinning actions to commit SHAs, SBOM, DAST
+- 🟡 Web hardening — done: strict CSP in the production build and in the preview server, plus `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`; verified in the browser with no console errors. Missing: HSTS and `frame-ancestors` on the real host, CSRF and cookie flags (no sessions exist yet)
+- 🟡 API hardening — done: request validation, 1 MB body limit, 400-line limit, refuses to run without a key, no internals in errors, Origin allow-list, Host check (DNS-rebinding), JSON-only content type, 10 requests/min per address, 2-minute request timeout, `no-store` and `nosniff` on responses. Missing: authentication and authorization (Phase 1), per-user quotas
+- 🟡 Secrets — done: `.env` is gitignored, `.env.example` committed, key never reaches the browser, `npm run scan` fails on API keys, private keys and ПИН-like numbers that are not the demo patients. Missing: secrets manager, rotation, separate keys per environment, a pre-commit hook
+- 🟡 LLM-specific controls — done: server-side sanitizer, transcript treated as data in the prompt, an attack and invention test set (7 fictional cases, including prompt injection) with a scorer and `npm run eval`. Missing: the eval has **never run against the real model** (needs an API key), output checks before signing, model/prompt version logging
+- 🟡 Clinical-safety logic — done: sign-blocking rules (unreviewed unsourced facts, unresolved allergy conflicts) moved into a tested, UI-independent module (`src/domain/rules.ts`). Missing: enforcement on a server, real drug database, hazard analysis
 
 ### Phase 3 — Verification
 - ⬜ Automated SAST/DAST on staging, dependency, container and IaC scans
@@ -76,13 +76,17 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 ### Evidence collected so far
 - `npm audit`: 0 known vulnerabilities (2026-11-24)
 - Code search: no `eval`, `innerHTML` or `dangerouslySetInnerHTML` in `src/` or `server/` (2026-11-24)
-- Tests passing: ПИН format (`npm test`), model-output sanitizer (`npm test`)
-- Not yet verified: the extraction call to the real model has never run (no API key available to development)
+- `npm test` passes locally: ПИН format, model-output sanitizer, API guards (13 checks), sign/allergy rules (10 checks), attack-set scorer (6 checks) (2026-11-24)
+- `npm run scan`: passes on the repository, and fails as intended on a planted fake API key and a planted ПИН-like number (2026-11-24)
+- Live API test with hostile requests: foreign `Origin` → 403, form content type → 415, 11th request in a minute → 429, GET → 404, no key → 503 with a clear message (2026-11-24). The Host-header check is covered by a unit test only, because the test client cannot forge a Host header
+- Production build served with the new headers: CSP present, app works end to end, no browser console errors (2026-11-24)
+- Not yet verified: the GitHub Actions workflows have never run; the extraction call and `npm run eval` have never run against the real model (no API key available to development)
 
 ### Changelog
 | Date | Change |
 |---|---|
 | 2026-11-24 | Plan written; progress tracker added; Phase 0 started |
+| 2026-11-24 | Phase 2 quick wins: CI/CodeQL/Dependabot/gitleaks config, secret and ПИН scan, API guards, CSP and security headers, shared sign/allergy rules with tests, LLM attack test set |
 
 How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
 

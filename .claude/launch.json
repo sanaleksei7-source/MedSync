@@ -2,6 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     { "name": "medsync-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "--", "--port", "5173"], "port": 5173 },
-    { "name": "medsync-api", "runtimeExecutable": "npx", "runtimeArgs": ["tsx", "server/index.ts"], "port": 8787 }
+    { "name": "medsync-api", "runtimeExecutable": "npx", "runtimeArgs": ["tsx", "server/index.ts"], "port": 8787 },
+    { "name": "medsync-preview", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "preview", "--port", "4173", "--strictPort"], "port": 4173 }
   ]
 }

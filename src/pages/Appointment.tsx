@@ -5,14 +5,11 @@ import { formatPin } from "../data/pin";
 import { findConflicts } from "../data/allergy";
 import LiveTranscript from "./LiveTranscript";
 import { addEntry, updateEntry } from "../data/history";
+import { blockingConflicts, keyOf, uncheckedKeys, type Action, type Decision } from "../domain/rules";
 
 const patient = patients[0];
 const plural = (n: number) =>
   n % 10 === 1 && n % 100 !== 11 ? "факт" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "факта" : "фактов";
-const keyOf = (si: number, i: number) => `${si}-${i}`;
-
-type Action = "kept" | "removed" | "edited";
-interface Decision { action: Action; text?: string }
 interface LogEntry { time: string; action: Action; before: string; after?: string }
 const actionLabel: Record<Action, string> = { kept: "Оставлено", removed: "Убрано", edited: "Исправлено" };
 
@@ -81,16 +78,8 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
   const visibleIds = new Set(transcript.slice(0, shown).map((l) => l.id));
   const isVisible = (ids: number[]) => (ids.length === 0 ? done : ids.every((id) => visibleIds.has(id)));
 
-  let filled = 0;
-  const unchecked: string[] = [];
-  doc.forEach((sec, si) =>
-    sec.statements.forEach((st, i) => {
-      if (!isVisible(st.sourceIds)) return;
-      filled++;
-      const k = keyOf(si, i);
-      if (st.sourceIds.length === 0 && !decisions[k]) unchecked.push(k);
-    }),
-  );
+  const filled = doc.reduce((n, sec) => n + sec.statements.filter((st) => isVisible(st.sourceIds)).length, 0);
+  const unchecked = uncheckedKeys(doc, decisions, isVisible);
   const conflicts = findConflicts(patient.allergies, transcript.slice(0, shown));
   const citing = (lineId: number) =>
     doc.flatMap((sec, si) =>
@@ -98,7 +87,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
         .map((st, i) => ({ st, k: keyOf(si, i) }))
         .filter(({ st, k }) => st.sourceIds.includes(lineId) && decisions[k]?.action !== "removed"),
     );
-  const blocking = conflicts.filter((c) => citing(c.lineId).length > 0 && !ackAllergy.includes(c.lineId));
+  const blocking = blockingConflicts(doc, decisions, conflicts, ackAllergy);
   const pct = Math.round((filled / total) * 100);
 
   const decide = (k: string, before: string, d: Decision) => {
