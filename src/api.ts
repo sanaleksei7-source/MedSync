@@ -20,6 +20,21 @@ export async function api<T>(method: "GET" | "POST", path: string, body?: unknow
   return data as T;
 }
 
+/** Отправка звука (PCM 16 кГц, Int16) на локальное распознавание. */
+export async function apiAudio(path: string, pcm: Int16Array): Promise<{ text: string; dropped?: string }> {
+  const bytes = new Uint8Array(pcm.byteLength);
+  bytes.set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+  const r = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/octet-stream", "X-Requested-With": "medsync", "X-Sample-Rate": "16000" },
+    body: bytes,
+  });
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new ApiError(r.status, (data as { error?: string } | null)?.error ?? `Ошибка ${r.status}`, data);
+  return data as { text: string; dropped?: string };
+}
+
 export interface Me {
   id: string;
   name: string;

@@ -37,7 +37,8 @@ Run `npm test` (all tests), `npm run seed` (creates fictional users in the gitig
 Each record lists the options, a recommended default, and what unblocks it. Nothing here is decided.
 
 ### D1 — Speech recognition ⚖
-- **Now:** browser Web Speech API; in Chrome and Edge the audio goes to Google or Microsoft.
+- **Status (2026-11-25):** the browser Web Speech API has been removed. The app now records audio, splits it at pauses and sends it only to a local speech service. Full design, risks and test plan: `docs/ASR_DESIGN.md`. No model has been run yet.
+- **Before:** browser Web Speech API; in Chrome and Edge the audio goes to Google or Microsoft.
 - **Options:** (a) self-hosted open-source model on infrastructure inside the approved jurisdiction; (b) a provider inside the jurisdiction under a processing agreement; (c) keep the browser API for fictional-data demos only.
 - **Recommended:** (a) for pilot, because it removes a foreign processor. Needs a Russian and Kyrgyz accuracy test on real clinic audio before choosing the model.
 - **Blocked by:** whether audio may leave the country; hosting decision (D5); GPU capacity.

@@ -7,6 +7,7 @@ import { parseLines, toLine, type AuditRecord } from "./audit";
 import { DEFAULT_ORIGINS } from "./guards";
 import { extractDraft } from "./llm";
 import { DemoSigner } from "./signer";
+import { engineFromEnv } from "./asr/engine";
 
 const USERS_FILE = "data/users.json";
 const AUDIT_FILE = "data/audit.log";
@@ -20,6 +21,8 @@ const audit: AuditRecord[] = existsSync(AUDIT_FILE) ? parseLines(readFileSync(AU
 
 // Ключ читается из переменной окружения ANTHROPIC_API_KEY (файл .env, не коммитится).
 const client = new Anthropic();
+const asr = engineFromEnv(process.env); // падает при небезопасном ASR_URL: аудио не должно уходить за пределы клиники
+console.log(asr ? `Распознавание речи: ${asr.name}` : "Распознавание речи не настроено (ASR_URL)");
 
 const handler = createHandler({
   users,
@@ -27,6 +30,7 @@ const handler = createHandler({
   throttle: new LoginThrottle(),
   signer: new DemoSigner(process.env.SIGNING_DEMO_KEY),
   audit,
+  asr,
   persistAudit: (r) => appendFileSync(AUDIT_FILE, toLine(r)),
   extract: (docTitle, sectionTitles, lines) => {
     if (!process.env.ANTHROPIC_API_KEY)

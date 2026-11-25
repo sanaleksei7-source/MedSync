@@ -5,6 +5,7 @@ import { LoginThrottle, SessionStore, verifyPassword, verifyTotp } from "./auth"
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
+import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, rms, type AsrEngine } from "./asr/engine";
 import { findConflicts } from "../src/data/allergy";
 import { patients } from "../src/data/patients";
 import { finalizeSections, signBlockers, type Decisions } from "../src/domain/rules";
@@ -27,6 +28,8 @@ export interface Deps {
   signer: Signer;
   audit: AuditRecord[];
   persistAudit: (r: AuditRecord) => void;
+  ipLimitPerMinute?: number;
+  asr?: AsrEngine | null; // распознавание речи; null — не настроено
   extract: (docTitle: string, sectionTitles: string[], lines: Line[]) => Promise<Section[]>;
   allowedOrigins: string[];
   allowedHosts?: string[]; // по умолчанию — локальные адреса (guards.hostAllowed)
@@ -59,6 +62,17 @@ async function readJson(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
 }
 
+async function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > limit) throw new Error("too large");
+    chunks.push(c as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 function cookieToken(req: http.IncomingMessage): string | undefined {
   const raw = req.headers.cookie;
   if (!raw) return undefined;
@@ -89,9 +103,10 @@ function isDecisions(d: unknown): d is Decisions {
 
 export function createHandler(deps: Deps) {
   const now = deps.now ?? Date.now;
-  const ipLimiter = new RateLimiter(120, 60_000);
+  const ipLimiter = new RateLimiter(deps.ipLimitPerMinute ?? 600, 60_000); // клиника может быть за одним внешним адресом
   const loginLimiter = new RateLimiter(20, 60_000);
   const extractLimiter = new RateLimiter(10, 60_000);
+  const asrLimiter = new RateLimiter(60, 60_000); // сегмент речи ≈ 5–25 с, 60 в минуту хватает с запасом
 
   const log = (e: Omit<AuditEvent, "time">) => {
     const rec = appendRecord(deps.audit, { time: new Date(now()).toISOString(), ...e });
@@ -107,7 +122,9 @@ export function createHandler(deps: Deps) {
 
     const isPost = req.method === "POST";
     if (isPost) {
-      if (!isJson(req.headers["content-type"])) return send(res, 415, { error: "Нужен Content-Type: application/json" });
+      const wantsAudio = url === "/api/asr";
+      if (wantsAudio ? !(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/octet-stream") : !isJson(req.headers["content-type"]))
+        return send(res, 415, { error: wantsAudio ? "Нужен Content-Type: application/octet-stream" : "Нужен Content-Type: application/json" });
       // Нестандартный заголовок нельзя отправить с чужого сайта без CORS-preflight (который мы не разрешаем).
       if (req.headers["x-requested-with"] !== "medsync") return send(res, 403, { error: "Forbidden" });
     }
@@ -159,6 +176,28 @@ export function createHandler(deps: Deps) {
       if (!can(actor, "audit.verify")) return send(res, 403, { error: "Недостаточно прав" });
       log({ actor: user.id, action: "audit.verify" });
       return send(res, 200, verifyChain(deps.audit));
+    }
+
+    if (isPost && url === "/api/asr") {
+      if (!can(actor, "asr.run")) return send(res, 403, { error: "Недостаточно прав" });
+      if (!deps.asr) return send(res, 503, { error: "Сервис распознавания речи не настроен (см. docs/ASR_DESIGN.md)" });
+      if (!asrLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов" });
+      if (req.headers["x-sample-rate"] !== String(SAMPLE_RATE)) return send(res, 400, { error: `Нужен PCM ${SAMPLE_RATE} Гц` });
+      let buf: Buffer;
+      try { buf = await readRaw(req, MAX_SECONDS * SAMPLE_RATE * 2 + 1024); } catch { return send(res, 413, { error: "Сегмент слишком длинный" }); }
+      const seconds = buf.length / 2 / SAMPLE_RATE;
+      if (buf.length % 2 !== 0 || seconds < MIN_SECONDS || seconds > MAX_SECONDS) return send(res, 400, { error: "Неверная длина сегмента" });
+      const pcm = new Int16Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length));
+      // Аудио существует только в памяти этого запроса. Не пишется на диск и не попадает в журнал.
+      log({ actor: user.id, action: "asr.segment", detail: { seconds: Math.round(seconds * 10) / 10 } });
+      if (rms(pcm) < SILENCE_RMS) return send(res, 200, { text: "", dropped: "silence" });
+      try {
+        const text = await deps.asr.transcribe(pcm);
+        if (isHallucination(text)) return send(res, 200, { text: "", dropped: "hallucination" });
+        return send(res, 200, { text });
+      } catch {
+        return send(res, 502, { error: "Сервис распознавания недоступен" }); // детали и текст не раскрываем и не пишем
+      }
     }
 
     if (isPost && url === "/api/extract") {

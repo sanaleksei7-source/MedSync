@@ -17,7 +17,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 | Phase | Status | Done / total items | Notes |
 |---|---|---|---|
 | 0 — Governance and threat model | 🟡 In progress | 1 / 8 | Plan written; legal answers and threat model still missing |
-| 1 — Architecture decisions | 🟡 Prototype started | 0 / 8 (5 partly, 3 blocked) | Login, roles, server-side rules and audit log prototyped on fictional data; speech, model, ЭЦП and Tunduk wait for the Phase 0 legal answers |
+| 1 — Architecture decisions | 🟡 Prototype started | 0 / 8 (6 partly, 2 blocked) | Login, roles, server-side rules and audit log prototyped on fictional data; speech, model, ЭЦП and Tunduk wait for the Phase 0 legal answers |
 | 2 — Secure implementation | 🟡 Started (partial) | 0 / 7 (7 partly) | Quick wins written and tested locally; CI not yet run on GitHub; no auth yet |
 | 3 — Verification | ⬜ Not started | 0 / 7 | Needs a staging environment and Phase 1–2 output |
 | 4 — Controlled pilot | ⬜ Not started | 0 / 3 | Only after the §5 gates |
@@ -26,7 +26,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 ### Phase 0 — Governance and threat model
 - ✅ Security plan written and committed (`SECURITY_PLAN.md`)
 - ⬜ Appoint a security owner and a data-protection contact
-- 🚫 Legal confirmations (§3): data residency, consent, ЭЦП scheme, Tunduk terms, retention, who may audit
+- 🚫 Legal confirmations (§3): data residency, consent, ЭЦП scheme, Tunduk terms, retention, who may audit — **question list for the lawyer and Минздрав prepared** (`docs/LEGAL_QUESTIONS_RU.md`, 24 questions in Russian); answers not received
 - ⬜ Data-flow diagram of every place patient data goes
 - ⬜ STRIDE threat model per data flow, and risk register with owners
 - ⬜ Data classification and log policy (no patient content, no ПИН in logs)
@@ -35,7 +35,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs s
 
 ### Phase 1 — Architecture decisions
 Details and decision records: `docs/PHASE1_ARCHITECTURE.md`.
-- 🚫 Speech recognition inside the approved jurisdiction (replace the browser Web Speech API) — decision record D1 written; blocked by the data-residency answer
+- 🟡 Speech recognition inside the approved jurisdiction — done: the browser Web Speech API is **removed**; microphone audio now goes browser → authenticated server → a speech service on the clinic machine, with a code-enforced local-only address policy, silence and hallucination filtering, in-memory handling and duration-only audit records (`docs/ASR_DESIGN.md`). Missing: **no speech model has been run yet**, accuracy test set and measurements, verification of the speech service's own logging and temp files, in-clinic https if it is not on the same machine
 - 🚫 Language-model hosting or processing agreement, plus de-identification before sending — decision record D2 written; blocked by the legal answer on cross-border transfer
 - 🟡 Backend and database — done: HTTP API with authenticated routes (login, session, sign, extract, audit verify). Missing: a real database, encryption at rest, backups and restore test, tenant isolation, TLS (storage is currently JSON files)
 - 🟡 Doctor login with MFA — done (prototype, fictional users): scrypt passwords, TOTP second factor checked against the RFC 6238 test vector, lockout after 5 failures, HttpOnly SameSite=Strict sessions with idle and absolute expiry, no account enumeration. Missing: independent review, password change/reset, MFA enrolment, user management; decision D6 (own accounts vs a state identity service)
@@ -85,6 +85,7 @@ Details and decision records: `docs/PHASE1_ARCHITECTURE.md`.
 - Live smoke test against the running server (`npm run smoke`): doctor login 200; sign with allergy conflict 409; another doctor's patient 403; sign after removing the order 200; extract without a key returns a clear error; auditor verification of a 7-record chain ok (2026-11-24)
 - Browser: the app shows only the login form before sign-in, and a wrong password shows a generic error. **Not checked in the browser:** the signed-in screens and signing through the new API (no way to type the seeded fictional password into the page without exposing it); these are covered by the integration and smoke tests instead (2026-11-24)
 - GitHub Actions on `4b23bf3` (2026-11-24): CI build-test ✅ green, gitleaks ✅ green, CodeQL ❌ failed after 3 min (error text not read) → removed from the repository
+- Speech path tests (2026-11-25): engine layer 28 checks (local-only address policy, WAV handling, hallucination filter, fake whisper.cpp server), accuracy metrics 19 checks, pause segmenter 11 checks (run 5 times; found and fixed a short-click flaw), `/api/asr` integration 16 checks (auth, role, size and format limits, silence skipped, no text in the audit log, rate limit). Browser: audio worklet loads under the strict CSP and yields 16 kHz float frames. **Not verified:** real microphone, any speech model, accuracy, speed, the speech service's own logs and temp files
 - Not yet verified: any SAST; the extraction call and `npm run eval` have never run against the real model (no API key available to development)
 
 ### Changelog
@@ -95,6 +96,8 @@ Details and decision records: `docs/PHASE1_ARCHITECTURE.md`.
 | 2026-11-24 | First GitHub run of the workflows: CI and gitleaks green, CodeQL failed |
 | 2026-11-24 | CodeQL workflow removed by decision; SAST gap recorded |
 | 2026-11-24 | Phase 1 prototype: login with TOTP, sessions, roles and patient assignment, server-side sign rules, hash-chained audit log, Signer interface, decision records D1–D7 (`docs/PHASE1_ARCHITECTURE.md`) |
+| 2026-11-25 | Question list for the lawyer and Минздрав written (`docs/LEGAL_QUESTIONS_RU.md`, 24 questions, Russian); no answers yet |
+| 2026-11-25 | Speech recognition moved off the browser API to a clinic-local service path (`/api/asr`, segmenter, filters, accuracy metrics and eval CLI, `docs/ASR_DESIGN.md`); no model run yet |
 
 How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
 

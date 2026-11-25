@@ -15,6 +15,8 @@ const t: [string, boolean][] = [
   ["doctor can't verify audit log", !can(doctor, "audit.verify")],
   ["doctor can't manage users", !can(doctor, "user.manage")],
   ["admin manages users", can(admin, "user.manage")],
+  ["doctor can use speech recognition", can(doctor, "asr.run")],
+  ["admin and auditor cannot use speech recognition", !can(admin, "asr.run") && !can(auditor, "asr.run")],
 ];
 let bad = 0;
 for (const [n, ok] of t) if (!ok) { bad++; console.error("FAIL", n); }

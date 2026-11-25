@@ -5,6 +5,7 @@ import { createHandler, type UserRecord } from "./app";
 import { LoginThrottle, SessionStore, hashPassword, newTotpSecret, totpAt } from "./auth";
 import { verifyChain, type AuditRecord } from "./audit";
 import { DemoSigner } from "./signer";
+import type { AsrEngine } from "./asr/engine";
 
 const secrets = { doc: newTotpSecret(), doc2: newTotpSecret(), adm: newTotpSecret(), aud: newTotpSecret() };
 const pw = "test-password-123";
@@ -26,8 +27,13 @@ const throttle = new LoginThrottle(5, 60_000);
 const server = http.createServer();
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const port = (server.address() as AddressInfo).port;
-const handler = createHandler({
+let asrCalls = 0;
+let asrBehavior: () => Promise<string> = async () => "Температура тридцать семь и восемь.";
+const fakeAsr: AsrEngine = { name: "fake", transcribe: async () => { asrCalls++; return asrBehavior(); } };
+const deps: Parameters<typeof createHandler>[0] = {
   users,
+  asr: fakeAsr,
+  ipLimitPerMinute: 100_000,
   sessions,
   throttle,
   signer: new DemoSigner("test-key"),
@@ -38,7 +44,8 @@ const handler = createHandler({
   allowedHosts: [`127.0.0.1:${port}`],
   secureCookie: false,
   dummyHash: hash,
-});
+};
+const handler = createHandler(deps);
 server.on("request", (req, res) => void handler(req, res));
 
 const base = `http://127.0.0.1:${port}`;
@@ -53,6 +60,14 @@ async function call(method: string, path: string, opts: { body?: unknown; cookie
   const setCookie = r.headers.get("set-cookie") ?? undefined;
   return { status: r.status, body: await r.json().catch(() => null), cookie: setCookie };
 }
+async function callRaw(path: string, bytes: Buffer, opts: { cookie?: string; rate?: string; ct?: string } = {}): Promise<R> {
+  const headers: Record<string, string> = { "Content-Type": opts.ct ?? "application/octet-stream", "X-Requested-With": "medsync", "X-Sample-Rate": opts.rate ?? "16000" };
+  if (opts.cookie) headers.Cookie = opts.cookie;
+  const r = await fetch(base + path, { method: "POST", headers, body: new Uint8Array(bytes) });
+  return { status: r.status, body: await r.json().catch(() => null) };
+}
+const pcmBytes = (seconds: number, amp: number) =>
+  Buffer.from(Int16Array.from({ length: Math.round(seconds * 16000) }, (_, i) => Math.round(Math.sin(i / 8) * amp)).buffer);
 const code = (s: string) => totpAt(s, Date.now());
 async function login(user: string, secret: string): Promise<string> {
   const r = await call("POST", "/api/login", { body: { username: user, password: pw, code: code(secret) } });
@@ -120,6 +135,38 @@ const doc2 = await login("doc2", secrets.doc2);
 check("doctor2 cannot sign doctor1's patient", (await call("POST", "/api/sign", { cookie: doc2, body: signBody({ decisions: { "1-0": { action: "kept" }, "2-0": { action: "removed" } } }) })).status === 403);
 check("admin cannot sign", (await call("POST", "/api/sign", { cookie: adm, body: signBody({}) })).status === 403);
 check("unknown patient → 403 (not in assignments)", (await call("POST", "/api/sign", { cookie: doc, body: signBody({ patientId: "p99" }) })).status === 403);
+
+// --- распознавание речи ---
+const speech = pcmBytes(1.5, 8000);
+check("asr without session → 401", (await callRaw("/api/asr", speech)).status === 401);
+check("admin cannot use asr", (await callRaw("/api/asr", speech, { cookie: adm })).status === 403);
+check("asr rejects json content type → 415", (await callRaw("/api/asr", speech, { cookie: doc, ct: "application/json" })).status === 415);
+check("extract rejects audio content type → 415", (await callRaw("/api/extract", speech, { cookie: doc })).status === 415);
+check("asr wrong sample rate → 400", (await callRaw("/api/asr", speech, { cookie: doc, rate: "44100" })).status === 400);
+check("asr odd byte length → 400", (await callRaw("/api/asr", speech.subarray(0, speech.length - 1), { cookie: doc })).status === 400);
+check("asr too short → 400", (await callRaw("/api/asr", pcmBytes(0.1, 8000), { cookie: doc })).status === 400);
+check("asr too long → rejected", [400, 413].includes((await callRaw("/api/asr", pcmBytes(31, 8000), { cookie: doc })).status));
+const before = asrCalls;
+const sil = await callRaw("/api/asr", pcmBytes(1.5, 0), { cookie: doc });
+check("silence is dropped without calling the engine", sil.status === 200 && sil.body.dropped === "silence" && asrCalls === before);
+const ok1 = await callRaw("/api/asr", speech, { cookie: doc });
+check("speech is transcribed by the engine", ok1.status === 200 && ok1.body.text === "Температура тридцать семь и восемь." && asrCalls === before + 1);
+asrBehavior = async () => "Продолжение следует...";
+const hal = await callRaw("/api/asr", speech, { cookie: doc });
+check("hallucination is dropped", hal.status === 200 && hal.body.text === "" && hal.body.dropped === "hallucination");
+asrBehavior = async () => { throw new Error("SECRET internal detail"); };
+const boom = await callRaw("/api/asr", speech, { cookie: doc });
+check("engine failure → 502 without details", boom.status === 502 && !JSON.stringify(boom.body).includes("SECRET"));
+asrBehavior = async () => "Температура тридцать семь и восемь.";
+deps.asr = null;
+check("asr not configured → 503", (await callRaw("/api/asr", speech, { cookie: doc })).status === 503);
+deps.asr = fakeAsr;
+const segLogs = audit.filter((r) => r.action === "asr.segment");
+check("asr segments audited with duration only", segLogs.length >= 3 && segLogs.every((r) => Object.keys(r.detail ?? {}).join() === "seconds"));
+check("transcribed text never reaches the audit log", !JSON.stringify(audit).includes("тридцать семь и восемь"));
+let limited = 0;
+for (let i = 0; i < 70; i++) if ((await callRaw("/api/asr", pcmBytes(0.5, 0), { cookie: doc2 })).status === 429) limited++;
+check("asr is rate limited per user", limited >= 5);
 
 // --- журнал аудита ---
 const aud = await login("aud1", secrets.aud);
