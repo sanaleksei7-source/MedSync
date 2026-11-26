@@ -1,7 +1,7 @@
 import http from "node:http";
 import { createHash } from "node:crypto";
 import { RateLimiter, hostAllowed, isJson, originAllowed } from "./guards";
-import { LoginThrottle, SessionStore, verifyPassword, verifyTotp } from "./auth";
+import { LoginThrottle, SessionStore, TokenStore, verifyPassword, verifyTotp } from "./auth";
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
@@ -24,11 +24,15 @@ export interface UserRecord {
 export interface Deps {
   users: UserRecord[];
   sessions: SessionStore;
+  tokens?: TokenStore; // вход для мобильных приложений; без него вход по токену отключён
+  appOrigins?: string[]; // origin обёрнутых приложений (capacitor://localhost, https://localhost): им разрешены CORS и токены, но не cookie
   throttle: LoginThrottle;
   signer: Signer;
   audit: AuditRecord[];
   persistAudit: (r: AuditRecord) => void;
   ipLimitPerMinute?: number;
+  loginLimitPerMinute?: number; // по умолчанию 20 с одного адреса
+
   asr?: AsrEngine | null; // распознавание речи; null — не настроено
   extract: (docTitle: string, sectionTitles: string[], lines: Line[]) => Promise<Section[]>;
   allowedOrigins: string[];
@@ -73,6 +77,11 @@ async function readRaw(req: http.IncomingMessage, limit: number): Promise<Buffer
   return Buffer.concat(chunks);
 }
 
+function bearerToken(req: http.IncomingMessage): string | undefined {
+  const m = /^Bearer ([A-Za-z0-9_-]{20,128})$/.exec(req.headers.authorization ?? "");
+  return m?.[1];
+}
+
 function cookieToken(req: http.IncomingMessage): string | undefined {
   const raw = req.headers.cookie;
   if (!raw) return undefined;
@@ -104,7 +113,8 @@ function isDecisions(d: unknown): d is Decisions {
 export function createHandler(deps: Deps) {
   const now = deps.now ?? Date.now;
   const ipLimiter = new RateLimiter(deps.ipLimitPerMinute ?? 600, 60_000); // клиника может быть за одним внешним адресом
-  const loginLimiter = new RateLimiter(20, 60_000);
+  const loginLimiter = new RateLimiter(deps.loginLimitPerMinute ?? 20, 60_000);
+  const refreshLimiter = new RateLimiter(60, 60_000); // обновление токена идёт каждые несколько минут, 60 в минуту с адреса клиники хватает
   const extractLimiter = new RateLimiter(10, 60_000);
   const asrLimiter = new RateLimiter(60, 60_000); // сегмент речи ≈ 5–25 с, 60 в минуту хватает с запасом
 
@@ -117,7 +127,19 @@ export function createHandler(deps: Deps) {
     const url = (req.url ?? "").split("?")[0];
     const host = req.headers.host;
     if (!(deps.allowedHosts ? deps.allowedHosts.includes(host ?? "") : hostAllowed(host))) return send(res, 403, { error: "Forbidden" });
-    if (!originAllowed(req.headers.origin, deps.allowedOrigins)) return send(res, 403, { error: "Forbidden" });
+    const appOrigins = deps.appOrigins ?? [];
+    const origin = req.headers.origin;
+    const fromApp = origin !== undefined && appOrigins.includes(origin);
+    if (!originAllowed(origin, [...deps.allowedOrigins, ...appOrigins])) return send(res, 403, { error: "Forbidden" });
+    if (fromApp) {
+      // CORS только для перечисленных приложений и без credentials: cookie с них не принимаются.
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Sample-Rate");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Max-Age", "600");
+      if (req.method === "OPTIONS") { res.writeHead(204); return void res.end(); }
+    }
     if (!ipLimiter.allow(req.socket.remoteAddress ?? "unknown")) return send(res, 429, { error: "Слишком много запросов" });
 
     const isPost = req.method === "POST";
@@ -132,9 +154,12 @@ export function createHandler(deps: Deps) {
     // ---- вход ----
     if (isPost && url === "/api/login") {
       if (!loginLimiter.allow(req.socket.remoteAddress ?? "unknown")) return send(res, 429, { error: "Слишком много попыток входа" });
-      let body: { username?: unknown; password?: unknown; code?: unknown };
+      let body: { username?: unknown; password?: unknown; code?: unknown; client?: unknown };
       try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверный запрос" }); }
       const { username, password, code } = body;
+      const wantsToken = body.client === "app";
+      // Браузерная версия остаётся на cookie: токен в JavaScript браузера не выдаём.
+      if (wantsToken && (!deps.tokens || (origin !== undefined && !fromApp))) return send(res, 400, { error: "Вход по токену недоступен" });
       if (typeof username !== "string" || typeof password !== "string" || typeof code !== "string" || username.length > 64 || password.length > 256)
         return send(res, 400, { error: "Неверный запрос" });
       const key = username.toLowerCase();
@@ -151,21 +176,60 @@ export function createHandler(deps: Deps) {
         return send(res, 401, { error: "Неверное имя, пароль или код" });
       }
       deps.throttle.reset(key);
+      if (wantsToken) {
+        const pair = deps.tokens!.issue(user.id, now());
+        log({ actor: user.id, action: "login.ok", detail: { client: "app" } });
+        return send(res, 200, { id: user.id, name: user.name, role: user.role, ...pair });
+      }
       const token = deps.sessions.create(user.id, now());
       log({ actor: user.id, action: "login.ok" });
       const cookie = `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${deps.secureCookie ? "; Secure" : ""}`;
       return send(res, 200, { id: user.id, name: user.name, role: user.role }, { "Set-Cookie": cookie });
     }
 
+    // ---- обновление токена приложения ----
+    if (isPost && url === "/api/token/refresh") {
+      if (!deps.tokens) return send(res, 400, { error: "Вход по токену недоступен" });
+      if (!refreshLimiter.allow(req.socket.remoteAddress ?? "unknown")) return send(res, 429, { error: "Слишком много попыток" });
+      let body: { refreshToken?: unknown };
+      try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверный запрос" }); }
+      const r = typeof body.refreshToken === "string" && body.refreshToken.length <= 128 ? deps.tokens.refresh(body.refreshToken, now()) : null;
+      if (!r) return send(res, 401, { error: "Требуется вход" });
+      if ("reuse" in r) {
+        log({ actor: r.userId, action: "token.reuse", detail: { client: "app" } });
+        return send(res, 401, { error: "Требуется вход" }); // старый токен предъявлен повторно: все токены этого входа отозваны
+      }
+      const u = deps.users.find((x) => x.id === r.userId);
+      if (!u) return send(res, 401, { error: "Требуется вход" });
+      log({ actor: u.id, action: "token.refresh", detail: { client: "app" } });
+      return send(res, 200, { id: u.id, name: u.name, role: u.role, ...r.pair });
+    }
+
     // ---- всё остальное требует сессии ----
-    const token = cookieToken(req);
-    const session = deps.sessions.get(token, now());
-    const user = session ? deps.users.find((u) => u.id === session.userId) : undefined;
+    // Два разных вида сессии. Если пришли оба признака сразу — отказ, чтобы их нельзя было перепутать.
+    const bearer = bearerToken(req);
+    const cookie = cookieToken(req);
+    if (bearer && cookie) return send(res, 400, { error: "Неверный запрос" });
+    if (req.headers.authorization && !bearer) return send(res, 401, { error: "Требуется вход" });
+    // Запросы приложений идут только по токену; браузерные — только по cookie.
+    if (fromApp && cookie) return send(res, 401, { error: "Требуется вход" });
+    const token = cookie;
+    let userId: string | undefined;
+    let tokenFamily: string | undefined;
+    if (bearer) {
+      const a = deps.tokens?.authenticate(bearer, now());
+      userId = a?.userId;
+      tokenFamily = a?.family;
+    } else {
+      userId = deps.sessions.get(token, now())?.userId;
+    }
+    const user = userId ? deps.users.find((u) => u.id === userId) : undefined;
     if (!user) return send(res, 401, { error: "Требуется вход" });
     const actor: Actor = { id: user.id, role: user.role, assignedPatients: user.assignedPatients };
 
     if (isPost && url === "/api/logout") {
-      deps.sessions.destroy(token);
+      if (tokenFamily) deps.tokens!.revoke(tokenFamily);
+      else deps.sessions.destroy(token);
       log({ actor: user.id, action: "logout" });
       return send(res, 200, { ok: true }, { "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }

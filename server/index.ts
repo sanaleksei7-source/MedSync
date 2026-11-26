@@ -2,7 +2,7 @@ import http from "node:http";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { createHandler, type UserRecord } from "./app";
-import { LoginThrottle, SessionStore, hashPassword } from "./auth";
+import { LoginThrottle, SessionStore, TokenStore, hashPassword } from "./auth";
 import { parseLines, toLine, type AuditRecord } from "./audit";
 import { DEFAULT_ORIGINS } from "./guards";
 import { extractDraft } from "./llm";
@@ -27,6 +27,8 @@ console.log(asr ? `Распознавание речи: ${asr.name}` : "Расп
 const handler = createHandler({
   users,
   sessions: new SessionStore(),
+  tokens: new TokenStore(),
+  appOrigins: process.env.APP_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ?? [],
   throttle: new LoginThrottle(),
   signer: new DemoSigner(process.env.SIGNING_DEMO_KEY),
   audit,

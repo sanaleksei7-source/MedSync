@@ -114,3 +114,96 @@ export class SessionStore {
     if (token) this.sessions.delete(SessionStore.h(token)); // выход завершает только эту сессию
   }
 }
+
+// ---- Токены для мобильных приложений ----
+// Cookie в обёрнутом приложении не работает (страница с другого origin), поэтому приложение получает
+// короткоживущий access-токен и одноразовый refresh-токен. Это отдельный вид сессии: токен не принимается
+// вместо cookie и наоборот (см. app.ts). На сервере хранятся только SHA-256 хэши токенов.
+export interface TokenPair { accessToken: string; refreshToken: string; expiresIn: number }
+interface Family {
+  userId: string;
+  created: number;
+  lastSeen: number;
+  refresh: string; // хэш действующего refresh-токена
+  used: Set<string>; // хэши уже использованных refresh-токенов — их повтор означает кражу
+  access: string; // хэш действующего access-токена
+}
+
+export class TokenStore {
+  private families = new Map<string, Family>();
+  private accessIndex = new Map<string, { family: string; expires: number }>();
+  private refreshIndex = new Map<string, string>(); // хэш refresh-токена → id семьи
+  /** accessMs — срок жизни access-токена; idleMs — сколько можно не пользоваться приложением; absoluteMs — потолок для одного входа. */
+  constructor(private accessMs = 5 * 60_000, private idleMs = 5 * 60_000, private absoluteMs = 8 * 3_600_000) {}
+  private static h = (t: string) => createHash("sha256").update(t).digest("hex");
+
+  private mint(familyId: string, f: Family, now: number): TokenPair {
+    const accessToken = randomBytes(32).toString("base64url");
+    const refreshToken = randomBytes(32).toString("base64url");
+    this.accessIndex.delete(f.access);
+    f.access = TokenStore.h(accessToken);
+    this.accessIndex.set(f.access, { family: familyId, expires: now + this.accessMs });
+    f.used.add(f.refresh);
+    f.refresh = TokenStore.h(refreshToken);
+    this.refreshIndex.set(f.refresh, familyId);
+    f.lastSeen = now;
+    return { accessToken, refreshToken, expiresIn: Math.floor(this.accessMs / 1000) };
+  }
+
+  issue(userId: string, now = Date.now()): TokenPair {
+    const familyId = randomBytes(16).toString("hex");
+    const f: Family = { userId, created: now, lastSeen: now, refresh: "", used: new Set(), access: "" };
+    this.families.set(familyId, f);
+    const pair = this.mint(familyId, f, now);
+    f.used.delete(""); // у первого выпуска предыдущего refresh-токена нет
+    return pair;
+  }
+
+  private alive(f: Family, now: number) {
+    return now - f.lastSeen <= this.idleMs && now - f.created <= this.absoluteMs;
+  }
+
+  /** Проверяет access-токен. Возвращает пользователя и id семьи (нужен для выхода). */
+  authenticate(token: string | undefined, now = Date.now()): { userId: string; family: string } | null {
+    if (!token) return null;
+    const a = this.accessIndex.get(TokenStore.h(token));
+    if (!a) return null;
+    const f = this.families.get(a.family);
+    if (!f) return null;
+    if (now > a.expires) return null; // истёк access-токен — нужен refresh
+    if (!this.alive(f, now)) { this.revoke(a.family); return null; }
+    f.lastSeen = now;
+    return { userId: f.userId, family: a.family };
+  }
+
+  /** Меняет refresh-токен на новую пару. Повторное использование старого токена отзывает весь вход. */
+  refresh(token: string | undefined, now = Date.now()): { pair: TokenPair; userId: string } | { reuse: true; userId: string } | null {
+    if (!token) return null;
+    const hash = TokenStore.h(token);
+    const familyId = this.refreshIndex.get(hash);
+    if (!familyId) return null;
+    const f = this.families.get(familyId);
+    if (!f) { this.refreshIndex.delete(hash); return null; }
+    if (hash !== f.refresh) { // старый токен предъявлен повторно
+      const userId = f.userId;
+      this.revoke(familyId);
+      return { reuse: true, userId };
+    }
+    if (!this.alive(f, now)) { this.revoke(familyId); return null; }
+    return { pair: this.mint(familyId, f, now), userId: f.userId };
+  }
+
+  revoke(familyId: string) {
+    const f = this.families.get(familyId);
+    if (!f) return;
+    this.accessIndex.delete(f.access);
+    this.refreshIndex.delete(f.refresh);
+    for (const u of f.used) this.refreshIndex.delete(u);
+    this.families.delete(familyId); // отзывается только этот вход
+  }
+
+  /** Отзывает все входы пользователя (например, при утере телефона). */
+  revokeUser(userId: string) {
+    for (const [id, f] of [...this.families]) if (f.userId === userId) this.revoke(id);
+  }
+}

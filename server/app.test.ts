@@ -2,7 +2,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHandler, type UserRecord } from "./app";
-import { LoginThrottle, SessionStore, hashPassword, newTotpSecret, totpAt } from "./auth";
+import { LoginThrottle, SessionStore, TokenStore, hashPassword, newTotpSecret, totpAt } from "./auth";
 import { verifyChain, type AuditRecord } from "./audit";
 import { DemoSigner } from "./signer";
 import type { AsrEngine } from "./asr/engine";
@@ -34,7 +34,10 @@ const deps: Parameters<typeof createHandler>[0] = {
   users,
   asr: fakeAsr,
   ipLimitPerMinute: 100_000,
+  loginLimitPerMinute: 1000,
   sessions,
+  tokens: new TokenStore(),
+  appOrigins: ["capacitor://localhost", "https://localhost"],
   throttle,
   signer: new DemoSigner("test-key"),
   audit,
@@ -49,16 +52,17 @@ const handler = createHandler(deps);
 server.on("request", (req, res) => void handler(req, res));
 
 const base = `http://127.0.0.1:${port}`;
-type R = { status: number; body: any; cookie?: string };
-async function call(method: string, path: string, opts: { body?: unknown; cookie?: string; origin?: string; xrw?: boolean; ct?: string } = {}): Promise<R> {
+type R = { status: number; body: any; cookie?: string; headers?: Headers };
+async function call(method: string, path: string, opts: { body?: unknown; cookie?: string; origin?: string; xrw?: boolean; ct?: string; auth?: string } = {}): Promise<R> {
   const headers: Record<string, string> = {};
   if (opts.body !== undefined) headers["Content-Type"] = opts.ct ?? "application/json";
   if (opts.xrw !== false && method === "POST") headers["X-Requested-With"] = "medsync";
   if (opts.cookie) headers.Cookie = opts.cookie;
   if (opts.origin) headers.Origin = opts.origin;
+  if (opts.auth) headers.Authorization = opts.auth;
   const r = await fetch(base + path, { method, headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
   const setCookie = r.headers.get("set-cookie") ?? undefined;
-  return { status: r.status, body: await r.json().catch(() => null), cookie: setCookie };
+  return { status: r.status, body: await r.json().catch(() => null), cookie: setCookie, headers: r.headers };
 }
 async function callRaw(path: string, bytes: Buffer, opts: { cookie?: string; rate?: string; ct?: string } = {}): Promise<R> {
   const headers: Record<string, string> = { "Content-Type": opts.ct ?? "application/octet-stream", "X-Requested-With": "medsync", "X-Sample-Rate": opts.rate ?? "16000" };
@@ -192,6 +196,53 @@ const lo = await call("POST", "/api/logout", { cookie: doc, body: {} });
 check("logout ok", lo.status === 200);
 check("session dead after logout", (await call("GET", "/api/me", { cookie: doc })).status === 401);
 check("logout does not end other sessions", (await call("GET", "/api/me", { cookie: doc2 })).status === 200);
+
+// --- вход для приложений (токены) ---
+const APP = "capacitor://localhost";
+const appLogin = (user: string, secret: string, origin: string | undefined = APP) =>
+  call("POST", "/api/login", { origin, body: { username: user, password: pw, code: code(secret), client: "app" } });
+const al = await appLogin("doc2", secrets.doc2);
+check("app login → tokens, no cookie", al.status === 200 && !!al.body.accessToken && !!al.body.refreshToken && !al.cookie && al.body.expiresIn === 300);
+check("app login response has no password hash or totp secret", !JSON.stringify(al.body).includes("scrypt") && !JSON.stringify(al.body).includes(secrets.doc2));
+check("token works as Bearer", (await call("GET", "/api/me", { auth: `Bearer ${al.body.accessToken}`, origin: APP })).body?.id === "doc2");
+check("token without Origin (native HTTP client) works", (await call("GET", "/api/me", { auth: `Bearer ${al.body.accessToken}` })).status === 200);
+check("garbage Bearer → 401", (await call("GET", "/api/me", { auth: "Bearer garbagegarbagegarbagegarbage" })).status === 401);
+check("malformed Authorization → 401", (await call("GET", "/api/me", { auth: "Basic abc" })).status === 401);
+check("token is not accepted as a cookie", (await call("GET", "/api/me", { cookie: `medsync_session=${al.body.accessToken}` })).status === 401);
+const cookieOnly = await login("doc2", secrets.doc2);
+check("cookie session is not accepted as a Bearer token", (await call("GET", "/api/me", { auth: `Bearer ${cookieOnly.split("=")[1]}` })).status === 401);
+check("cookie and token together → 400", (await call("GET", "/api/me", { auth: `Bearer ${al.body.accessToken}`, cookie: cookieOnly })).status === 400);
+check("browser origin cannot get tokens", (await appLogin("doc2", secrets.doc2, "http://localhost:5173")).status === 400);
+check("app origin cannot use a cookie session", (await call("GET", "/api/me", { cookie: cookieOnly, origin: APP })).status === 401);
+check("token login with wrong password → 401", (await call("POST", "/api/login", { origin: APP, body: { username: "doc2", password: "wrong-password-1", code: code(secrets.doc2), client: "app" } })).status === 401);
+const pre = await fetch(base + "/api/me", { method: "OPTIONS", headers: { Origin: APP, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization" } });
+check("preflight from app origin → 204 with CORS, no credentials", pre.status === 204 && pre.headers.get("access-control-allow-origin") === APP && pre.headers.get("access-control-allow-credentials") === null);
+const preEvil = await fetch(base + "/api/me", { method: "OPTIONS", headers: { Origin: "https://evil.example" } });
+check("preflight from foreign origin → 403, no CORS", preEvil.status === 403 && preEvil.headers.get("access-control-allow-origin") === null);
+const preWeb = await fetch(base + "/api/me", { method: "OPTIONS", headers: { Origin: "http://localhost:5173" } });
+check("browser origin gets no CORS headers", preWeb.headers.get("access-control-allow-origin") === null);
+check("app token reaches protected routes with the same checks", (await call("POST", "/api/sign", { auth: `Bearer ${al.body.accessToken}`, body: { patientId: "p1" } })).status === 400);
+
+const rf = await call("POST", "/api/token/refresh", { origin: APP, body: { refreshToken: al.body.refreshToken } });
+check("refresh → new pair", rf.status === 200 && rf.body.accessToken !== al.body.accessToken && rf.body.refreshToken !== al.body.refreshToken);
+check("old access token dead after refresh", (await call("GET", "/api/me", { auth: `Bearer ${al.body.accessToken}` })).status === 401);
+check("new access token works", (await call("GET", "/api/me", { auth: `Bearer ${rf.body.accessToken}` })).status === 200);
+const reuse = await call("POST", "/api/token/refresh", { origin: APP, body: { refreshToken: al.body.refreshToken } });
+check("reused refresh token → 401", reuse.status === 401);
+check("reuse revokes the whole login", (await call("GET", "/api/me", { auth: `Bearer ${rf.body.accessToken}` })).status === 401 && (await call("POST", "/api/token/refresh", { origin: APP, body: { refreshToken: rf.body.refreshToken } })).status === 401);
+check("reuse is audited", audit.some((r) => r.action === "token.reuse"));
+check("refresh with garbage → 401", (await call("POST", "/api/token/refresh", { origin: APP, body: { refreshToken: "x".repeat(43) } })).status === 401);
+check("refresh without body field → 401", (await call("POST", "/api/token/refresh", { origin: APP, body: {} })).status === 401);
+check("access token is not a refresh token", (await call("POST", "/api/token/refresh", { origin: APP, body: { refreshToken: rf.body.accessToken } })).status === 401);
+
+const t1 = await appLogin("doc2", secrets.doc2);
+const t2 = await appLogin("doc2", secrets.doc2);
+check("token logout ok", (await call("POST", "/api/logout", { auth: `Bearer ${t1.body.accessToken}`, body: {} })).status === 200);
+check("logged-out token dead, refresh dead too", (await call("GET", "/api/me", { auth: `Bearer ${t1.body.accessToken}` })).status === 401 && (await call("POST", "/api/token/refresh", { body: { refreshToken: t1.body.refreshToken } })).status === 401);
+check("token logout leaves other logins alone", (await call("GET", "/api/me", { auth: `Bearer ${t2.body.accessToken}` })).status === 200 && (await call("GET", "/api/me", { cookie: doc2 })).status === 200);
+check("refresh needs X-Requested-With", (await call("POST", "/api/token/refresh", { body: { refreshToken: t2.body.refreshToken }, xrw: false })).status === 403);
+const tokenDump = JSON.stringify(audit);
+check("audit records app logins but no tokens", audit.some((r) => r.action === "login.ok" && r.detail?.client === "app") && ![al, rf, t1, t2].some((x) => x.body?.accessToken && tokenDump.includes(x.body.accessToken)));
 
 // --- блокировка перебора ---
 for (let i = 0; i < 5; i++) await call("POST", "/api/login", { body: { username: "adm1", password: "wrong-password-1", code: "000000" } });
