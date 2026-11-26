@@ -50,5 +50,12 @@ export default defineConfig({
         proxy: { "/api": { target: "http://127.0.0.1:8787", changeOrigin: true } },
       }
     : { proxy: { "/api": "http://127.0.0.1:8787" } },
-  preview: { headers, proxy: { "/api": "http://127.0.0.1:8787" } },
+  preview: lan
+    ? {
+        headers,
+        https: { key: readFileSync(join(lan.dir, "server.key")), cert: readFileSync(join(lan.dir, "server.crt")) },
+        allowedHosts: [lan.ip, "localhost", "127.0.0.1"],
+        proxy: { "/api": { target: "http://127.0.0.1:8787", changeOrigin: true } },
+      }
+    : { headers, proxy: { "/api": "http://127.0.0.1:8787" } },
 });

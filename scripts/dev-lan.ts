@@ -1,4 +1,4 @@
-// Запуск для проверки на телефоне в той же Wi-Fi сети: npm run dev:lan
+// Запуск для проверки на телефоне в той же Wi-Fi сети: npm run dev:lan  (обычный режим)  или  npm run dev:lan -- --build  (собранная версия: нужна для установки на главный экран)
 //  1. создаёт локальный сертификат (один раз) в папке ВНЕ проекта: C:\Users\<вы>\medsync-dev-certs;
 //  2. запускает сервер и сайт по HTTPS на адресе компьютера в локальной сети.
 // Браузеру телефона нужен HTTPS, иначе он не даст доступ к микрофону.
@@ -10,6 +10,7 @@ import { isPrivateIpv4, pickLanIp } from "./lan";
 
 const DIR = process.env.DEV_CERT_DIR ?? join(homedir(), "medsync-dev-certs");
 const PORT = 5173;
+const built = process.argv.includes("--build"); // собранная версия, как на настоящем сервере; работает service worker и установка на экран
 
 function openssl(args: string[]) {
   const candidates = [process.env.OPENSSL, "openssl", "C:\\Program Files\\Git\\mingw64\\bin\\openssl.exe", "C:\\Program Files\\Git\\usr\\bin\\openssl.exe"].filter(Boolean) as string[];
@@ -79,7 +80,11 @@ const run = (cmd: string, args: string[], env: Record<string, string>) =>
   spawn(cmd, args, { stdio: "inherit", shell: process.platform === "win32", env: { ...process.env, ...env } });
 
 const api = run("npx", ["tsx", "server/index.ts"], { ALLOWED_ORIGINS: `${origin},https://localhost:${PORT}` });
-const web = run("npx", ["vite", "--host", "0.0.0.0", "--port", String(PORT), "--strictPort"], {
+if (built) {
+  console.log("Собираю приложение…");
+  execFileSync("npx", ["vite", "build"], { stdio: "inherit", shell: process.platform === "win32" });
+}
+const web = run("npx", ["vite", ...(built ? ["preview"] : []), "--host", "0.0.0.0", "--port", String(PORT), "--strictPort"], {
   DEV_HTTPS: "1", DEV_LAN_IP: ip, DEV_CERT_DIR: DIR,
 });
 const stop = () => { api.kill(); web.kill(); };
