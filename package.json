@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "dev:lan": "tsx scripts/dev-lan.ts",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsx src/data/pin.test.ts && tsx server/extract.test.ts && tsx server/guards.test.ts && tsx src/domain/rules.test.ts && tsx server/eval/check.test.ts && tsx server/audit.test.ts && tsx server/rbac.test.ts && tsx server/auth.test.ts && tsx server/app.test.ts && tsx server/asr/engine.test.ts && tsx server/asr/metrics.test.ts && tsx src/audio/segmenter.test.ts && tsx src/audio/suggest.test.ts && tsx src/audio/resample.test.ts",
+    "test": "tsx src/data/pin.test.ts && tsx server/extract.test.ts && tsx server/guards.test.ts && tsx src/domain/rules.test.ts && tsx server/eval/check.test.ts && tsx server/audit.test.ts && tsx server/rbac.test.ts && tsx server/auth.test.ts && tsx server/app.test.ts && tsx server/asr/engine.test.ts && tsx server/asr/metrics.test.ts && tsx src/audio/segmenter.test.ts && tsx src/audio/suggest.test.ts && tsx src/audio/resample.test.ts && tsx scripts/lan.test.ts",
     "server": "tsx --env-file=.env server/index.ts",
     "scan": "tsx scripts/scan.ts",
     "eval": "tsx --env-file=.env server/eval/run.ts",
