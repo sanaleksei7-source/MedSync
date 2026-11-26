@@ -1,11 +1,31 @@
 import { patients } from "../data/patients";
 import { formatPin } from "../data/pin";
 
+const birth = (d: string) => d.split("-").reverse().join(".");
+
 export default function Patients() {
   return (
     <div>
       <h1 className="mb-4 text-xl font-semibold">Пациенты</h1>
-      <table className="w-full overflow-hidden rounded bg-white text-left text-sm shadow-sm">
+
+      {/* Телефон: карточки */}
+      <ul className="space-y-2 md:hidden">
+        {patients.map((p) => (
+          <li key={p.id} className="rounded bg-white p-4 shadow-sm">
+            <div className="font-medium">{p.name}</div>
+            <div className="text-sm text-slate-600">{birth(p.birthDate)}</div>
+            <div className="font-mono text-sm text-slate-600">ПИН {formatPin(p.pin)}</div>
+            {p.allergies.length > 0 && (
+              <div className="mt-1 inline-block rounded bg-red-50 px-2 py-0.5 text-xs text-red-800">
+                Аллергия: {p.allergies.join(", ")}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* Компьютер: таблица */}
+      <table className="hidden w-full overflow-hidden rounded bg-white text-left text-sm shadow-sm md:table">
         <thead className="bg-slate-100 text-slate-600">
           <tr>
             <th className="p-3">ФИО</th>
@@ -18,7 +38,7 @@ export default function Patients() {
           {patients.map((p) => (
             <tr key={p.id} className="border-t">
               <td className="p-3">{p.name}</td>
-              <td className="p-3">{p.birthDate.split("-").reverse().join(".")}</td>
+              <td className="p-3">{birth(p.birthDate)}</td>
               <td className="p-3 font-mono">{formatPin(p.pin)}</td>
               <td className="p-3">{p.allergies.join(", ") || "—"}</td>
             </tr>

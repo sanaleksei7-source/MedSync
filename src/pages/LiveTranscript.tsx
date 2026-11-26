@@ -126,7 +126,7 @@ export default function LiveTranscript({
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-3">
-            <button onClick={recording ? stop : start} className={`rounded px-4 py-2 text-sm text-white ${recording ? "bg-red-600" : "bg-teal-600"}`}>
+            <button onClick={recording ? stop : start} className={`w-full rounded px-4 py-3 text-base text-white sm:w-auto sm:py-2 sm:text-sm ${recording ? "bg-red-600" : "bg-teal-600"}`}>
               {recording ? "■ Стоп" : "● Начать запись"}
             </button>
             <span className="text-sm text-slate-600">Говорит:</span>
@@ -143,13 +143,13 @@ export default function LiveTranscript({
             {rows.length === 0 && <p className="text-sm text-slate-500">Нажмите «Начать запись» и говорите. Фразы появляются после паузы.</p>}
             <ol className="space-y-1.5 text-sm">
               {rows.map((r) => (
-                <li key={r.id} className="flex items-center gap-2">
+                <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 sm:flex-nowrap">
                   <span className="w-8 shrink-0 text-xs text-slate-400">#{r.id}</span>
                   <b className={`w-20 shrink-0 ${r.speaker === "Врач" ? "text-teal-700" : "text-slate-700"}`}>{r.speaker}:</b>
                   {r.pending ? (
                     <span className="text-slate-400">…</span>
                   ) : (
-                    <div className="min-w-0 flex-1">
+                    <div className="order-last min-w-0 basis-full sm:order-none sm:basis-0 sm:flex-1">
                       {editing === r.id || !r.words ? (
                         <input
                           autoFocus={editing === r.id}
@@ -186,7 +186,7 @@ export default function LiveTranscript({
                     </div>
                   )}
                   {!r.pending && (
-                    <button onClick={() => setRows((all) => all.filter((x) => x.id !== r.id))} className="text-slate-400 hover:text-red-600" aria-label={`Удалить реплику ${r.id}`}>✕</button>
+                    <button onClick={() => setRows((all) => all.filter((x) => x.id !== r.id))} className="ml-auto px-2 text-slate-400 hover:text-red-600 sm:ml-0" aria-label={`Удалить реплику ${r.id}`}>✕</button>
                   )}
                 </li>
               ))}
@@ -199,11 +199,11 @@ export default function LiveTranscript({
             )}
             {dropped > 0 && <p className="mt-2 text-xs text-slate-400">Отброшено фрагментов без речи или с шумом: {dropped}</p>}
             {usable.length > 0 && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+              <div className="mt-3 grid gap-2 text-sm sm:flex sm:flex-wrap sm:items-center">
                 <select value={type} onChange={(e) => setType(e.target.value as DocType)} className="rounded border px-2 py-1">
                   {(Object.keys(docs) as DocType[]).map((t) => <option key={t} value={t}>{docs[t].label}</option>)}
                 </select>
-                <button disabled={busy || pending} onClick={makeDraft} className="rounded bg-teal-600 px-3 py-1 text-white disabled:opacity-50">
+                <button disabled={busy || pending} onClick={makeDraft} className="rounded bg-teal-600 px-3 py-2 text-white disabled:opacity-50 sm:py-1">
                   {busy ? "Составляю…" : "Составить документ"}
                 </button>
                 <button className="rounded border px-3 py-1" onClick={() => navigator.clipboard?.writeText(usable.map((l) => `${l.speaker}: ${l.text}`).join("\n"))}>

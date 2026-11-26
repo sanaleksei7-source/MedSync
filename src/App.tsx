@@ -51,11 +51,11 @@ export default function App() {
   if (me === undefined) return <div className="p-6 text-slate-500">Загрузка…</div>;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="flex items-center gap-6 border-b bg-white px-6 py-3">
+    <div className="min-h-dvh bg-slate-50 text-slate-900">
+      <header className="safe-top sticky top-0 z-20 flex flex-wrap items-center gap-x-6 gap-y-1 border-b bg-white px-4 py-2 md:px-6 md:py-3">
         <span className="text-lg font-semibold text-teal-700">MedSync</span>
         {me?.role === "doctor" && (
-          <nav className="flex gap-1">
+          <nav className="hidden gap-1 md:flex">
             {tabs.map((t) => (
               <button
                 key={t.id}
@@ -70,12 +70,12 @@ export default function App() {
         <span className="ml-auto rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">Демо · вымышленные данные</span>
         {me && (
           <span className="flex items-center gap-2 text-sm text-slate-600">
-            {me.name}
-            <button onClick={logout} className="rounded border px-2 py-0.5 text-xs">Выйти</button>
+            <span className="max-w-[10rem] truncate">{me.name}</span>
+            <button onClick={logout} className="rounded border px-3 py-1 text-xs">Выйти</button>
           </span>
         )}
       </header>
-      <main className="mx-auto max-w-5xl p-6">
+      <main className={`mx-auto max-w-5xl p-4 md:p-6 ${me?.role === "doctor" ? "pb-24 md:pb-6" : ""}`}>
         {!me && <Login onLogin={setMe} />}
         {me && me.role !== "doctor" && <AuditPanel />}
         {me?.role === "doctor" && (
@@ -87,11 +87,25 @@ export default function App() {
           </>
         )}
       </main>
-      <footer className="mx-auto max-w-5xl px-6 pb-8 text-xs text-slate-500">
+      <footer className={`mx-auto max-w-5xl px-4 text-xs text-slate-500 md:px-6 md:pb-8 ${me?.role === "doctor" ? "pb-28" : "pb-8"}`}>
         Демо-версия. Все пациенты и данные вымышленные. Разговор — заранее написанный сценарий, а не запись и не
         реальное распознавание речи. ЭЦП и отправка в медкарту — имитация без юридической силы. Не является
         медицинским изделием.
       </footer>
+      {me?.role === "doctor" && (
+        <nav className="safe-bottom fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t bg-white md:hidden" aria-label="Разделы">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              aria-current={tab === t.id ? "page" : undefined}
+              className={`min-h-14 px-1 text-xs font-medium ${tab === t.id ? "text-teal-700 shadow-[inset_0_2px_0_0_var(--color-teal-600)]" : "text-slate-500"}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }

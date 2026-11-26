@@ -23,7 +23,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 | Stage | Status | Steps done / total | Notes |
 |---|---|---|---|
 | 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 4 partly done (0.1 CI result unchecked, 0.4 one question open, 0.5 and 0.7 need the owner), 0.3 and 0.6 waiting on the owner |
-| 1 — Phone-ready web app | ⬜ Not started | 0 / 6 | Can start now |
+| 1 — Phone-ready web app | 🟡 In progress | 0 / 6 | 1.1 built, checked at 375 px with a stubbed login; needs a real-phone look (1.6). Mobbin references were not used (connector not connected) |
 | 2 — Speech quality | ⬜ Not started | 0 / 8 | Already measured: the `small` model on the owner's voice (`docs/ASR_DESIGN.md` section 9). Step 2.1 starts with the owner's OK for a 1.62 GB download |
 | 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
 | 4 — Native iPhone and Android apps | ⬜ Not started | 0 / 7 | Needs Stage 1; iPhone needs a Mac or cloud builder |
@@ -38,6 +38,7 @@ Evidence: 0.1 — all tests, the build and the secret scan passed before commit 
 | Date | Change |
 |---|---|
 | 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created. Owner's answers recorded: no Mac, phones over the internet, keep `dist/` |
+| 2026-11-26 | Step 1.1 built: phone layout for all screens (see step row). Build passes; layout checked in the browser pane at 375 px |
 
 How this is maintained: whenever a step moves, its Status cell, the stage counts, the evidence line and the changelog are updated, and `SECURITY_PLAN.md` gets a matching changelog row if the step is security-related.
 
@@ -62,7 +63,7 @@ Useful whichever packaging we finally use. Can run in parallel with Stages 0 and
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 1.1 | Responsive phone layout for every screen (login, home, patients, visit, review, history) | Claude | Looks and works at 375 px wide in the browser; touch targets large enough | ⬜ |
+| 1.1 | Responsive phone layout for every screen (login, home, patients, visit, review, history) | Claude | Looks and works at 375 px wide in the browser; touch targets large enough | 🟡 Built: bottom tab bar, cards instead of tables, 44 px targets, 16 px inputs, safe-area insets, sticky sign button. Checked: no sideways scroll, no button under 40 px (login, all tabs, review screen). Not checked: real phone, live-recording page |
 | 1.2 | Token login for apps: server issues short-lived tokens, refresh, revocation, shorter mobile idle time, CORS and Origin rules for app origins; keep cookie login for the browser | Claude | Integration tests pass for both; cookie and token cannot be mixed up | ⬜ |
 | 1.3 | Audio capture that works on iPhone: capture at the device rate and resample to 16 kHz in the worklet, handle interruptions and screen wake lock | Claude | Unit tests pass; works in Chrome; real iPhone check pending | ⬜ |
 | 1.4 | Local HTTPS for development (a locally trusted certificate), so a phone on the same Wi-Fi can open the app and use the microphone | Claude, owner installs the certificate on their phone | Phone opens the app and asks for the microphone | ⬜ |

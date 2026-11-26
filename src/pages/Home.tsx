@@ -8,7 +8,7 @@ export default function Home({ onStart }: { onStart: () => void }) {
         MedSync слушает приём, расшифровывает разговор и готовит черновик документа. Каждый факт в документе
         привязан к реплике, из которой он взят.
       </p>
-      <button onClick={onStart} className="rounded bg-teal-600 px-4 py-2 text-white hover:bg-teal-700">
+      <button onClick={onStart} className="w-full rounded bg-teal-600 px-4 py-3 text-white hover:bg-teal-700 md:w-auto md:py-2">
         Начать демо-приём
       </button>
     </div>
