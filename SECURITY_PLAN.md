@@ -105,6 +105,7 @@ Details and decision records: `docs/PHASE1_ARCHITECTURE.md`.
 | 2026-11-26 | Goal changed to a mobile app (iPhone and Android, online only, whole-conversation recording); mobile plan written (`docs/MOBILE_PLAN.md`); mobile security items added to Phase 1; nothing built yet |
 | 2026-11-26 | Step-by-step development plan written (`docs/DEVELOPMENT_PLAN.md`, stages 0–8); no steps started |
 | 2026-11-26 | Housekeeping: `.gitignore` rule `data/` also hid `src/data/` (fixed to `/data/`); voice recordings moved out of the OneDrive project folder; audio files git-ignored and rejected by the secret scan; legal question list extended with 7 mobile-app questions (31 total) |
+| 2026-11-26 | Owner decided phones reach the server over the internet and there is no Mac: internet-facing hardening requirements recorded (`docs/MOBILE_PLAN.md` section 8); penetration test must be run from the internet; pushed all work to GitHub |
 
 How this tracker is maintained: whenever a security task lands, its line above changes status, the counts in the phase summary are updated, the evidence list gets what was checked and how, and a row is added to the changelog.
 

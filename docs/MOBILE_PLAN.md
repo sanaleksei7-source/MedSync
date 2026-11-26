@@ -78,3 +78,24 @@ Packages 1 to 3 are useful whichever packaging is finally chosen, so they can st
 2. OK to install Android Studio and the Android SDK for package 5? (large download from Google; I will state file, source and size first)
 3. How phones will reach the server (clinic Wi-Fi only, VPN, or internet) and who issues the TLS certificate.
 4. Confirm Capacitor as the packaging (this plan's recommendation).
+
+## 7. Decisions recorded 2026-11-26
+
+| Question | Owner's answer | Consequence |
+|---|---|---|
+| Mac for the iPhone build? | **No Mac** | iPhone builds run on a cloud macOS builder (for example Codemagic, or GitHub Actions macOS runners; minutes are limited and billed differently on private repositories, to be checked when we get there). An Apple developer account is still needed. Real iPhone testing needs a physical iPhone and TestFlight |
+| How do phones reach the server? | **Over the internet** | The API becomes internet-facing. See section 8 |
+| Install Android Studio and the Android SDK? | not answered yet | Asked again at Stage 4 |
+| Offline use | online only | no offline storage of drafts |
+| Visit content | whole conversation | see section 4 |
+
+## 8. What an internet-facing server requires
+The server is no longer protected by sitting inside a clinic network, so these become mandatory, not optional:
+- **Public HTTPS** with a certificate from a recognised authority, automatic renewal, HSTS, and TLS settings checked by a scanner. Phones then need no special certificate. Certificate pinning in the app is added later.
+- **A reverse proxy or web application firewall** in front of the Node server, with request limits, size limits and bot filtering. The built-in limits (per user, per username, per address) stay as a second layer; the per-address limit must allow many doctors behind one clinic address.
+- **The speech service is never exposed.** It stays on a private network behind the API and is called only by the server. The existing rule that the speech address must be local or https on a private network already enforces this.
+- **Brute-force and takeover protection:** the second factor stays mandatory; add alerts on repeated failures, impossible travel and logins from new devices; fast revocation of tokens.
+- **Hosting inside the country, hardened and patched,** with monitoring, backups, restore drills and a documented incident process. Where it is hosted depends on the legal answer on data location.
+- **Denial-of-service plan:** a clinic that cannot reach the server cannot work, so there must be a fallback (the doctor can write the document by hand) and DoS protection from the host or a provider.
+- **The penetration test scope (step 6.5) is internet-facing,** so it must test from outside, with the app, the API and the infrastructure.
+- **Legal question 30** (data over open networks) must be answered before any real use.

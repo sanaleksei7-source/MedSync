@@ -22,7 +22,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 
 | Stage | Status | Steps done / total | Notes |
 |---|---|---|---|
-| 0 — Housekeeping and decisions | 🟡 In progress | 1 / 8 | 4 partly done (including 0.1: committed, not pushed), 2 waiting on the owner |
+| 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 4 partly done (0.1 CI result unchecked, 0.4 one question open, 0.5 and 0.7 need the owner), 0.3 and 0.6 waiting on the owner |
 | 1 — Phone-ready web app | ⬜ Not started | 0 / 6 | Can start now |
 | 2 — Speech quality | ⬜ Not started | 0 / 8 | Already measured: the `small` model on the owner's voice (`docs/ASR_DESIGN.md` section 9). Step 2.1 starts with the owner's OK for a 1.62 GB download |
 | 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
@@ -32,12 +32,12 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 | 7 — Pilot | ⬜ Not started | 0 / 5 | Only after every release gate |
 | 8 — Operate | ⬜ Not started | — | |
 
-Evidence: 0.1 — all tests, the build and the secret scan passed before the local commit `a09c206`; GitHub is still two commits behind until the owner approves the push. 0.2 (✅) — the 11 project copies were checked byte for byte against the originals in `C:\Users\User\medsync-asr\recordings` and moved to `C:\Users\User\medsync-asr\duplicates-from-project`.
+Evidence: 0.1 — all tests, the build and the secret scan passed before commit `a09c206`; pushed to GitHub on 2026-11-26 with the owner's approval, and the CI run has not been checked yet. 0.2 (✅) — the 11 project copies were checked byte for byte against the originals in `C:\Users\User\medsync-asr\recordings` and moved to `C:\Users\User\medsync-asr\duplicates-from-project`.
 
 ### Changelog
 | Date | Change |
 |---|---|
-| 2026-11-26 | Plan written. Stage 0: pending work committed locally (not pushed yet); recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created |
+| 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created. Owner's answers recorded: no Mac, phones over the internet, keep `dist/` |
 
 How this is maintained: whenever a step moves, its Status cell, the stage counts, the evidence line and the changelog are updated, and `SECURITY_PLAN.md` gets a matching changelog row if the step is security-related.
 
@@ -47,14 +47,14 @@ How this is maintained: whenever a step moves, its Status cell, the stage counts
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 0.1 | Commit and push the work done since the last push (speech, recording tools, plans) | Claude, on the owner's go-ahead | GitHub matches the computer; CI is green | 🟡 committed locally (a09c206); push waits for the owner's OK |
+| 0.1 | Commit and push the work done since the last push (speech, recording tools, plans) | Claude, on the owner's go-ahead | GitHub matches the computer; CI is green | 🟡 pushed 2026-11-26 (GitHub matches the computer); CI result not yet checked |
 | 0.2 | Move the real voice recordings out of the OneDrive project folder (`docs/recordings/`) | Owner | Folder not inside the project | ✅ 2026-11-26 |
 | 0.3 | Turn on branch protection for `main` on GitHub | Owner | Settings → Branches rule exists | 🚫 owner |
-| 0.4 | Answer: Mac available? Android Studio OK? How do phones reach the server (clinic Wi-Fi, VPN, internet)? | Owner | Answers recorded in `docs/MOBILE_PLAN.md` | 🚫 owner |
+| 0.4 | Answer: Mac available? Android Studio OK? How do phones reach the server (clinic Wi-Fi, VPN, internet)? | Owner | Answers recorded in `docs/MOBILE_PLAN.md` | 🟡 answered: no Mac (cloud macOS builder), phones reach the server over the internet (see `docs/MOBILE_PLAN.md` sections 7–8); Android Studio question still open |
 | 0.5 | Send `docs/LEGAL_QUESTIONS_RU.md` to a lawyer (add the mobile and app-store questions) | Owner | Lawyer has the list; follow-up date set | 🟡 list ready (31 questions); owner to send |
 | 0.6 | Create Apple developer and Google Play developer accounts (can wait until Stage 4) | Owner | Accounts exist | ⬜ |
 | 0.7 | Get the clinic's real drug formulary (names, forms, doses) as a spreadsheet | Owner | File available to replace the demo list | 🟡 template ready; owner to supply formulary |
-| 0.8 | Clean the project folder: remove unneeded files, fix ignore rules, keep voice data out of the repository | Claude, owner confirms deletions | Only needed files remain; scan rejects audio and secrets | 🟡 ignore bug fixed, recordings moved out; `dist/` removal awaits owner's OK |
+| 0.8 | Clean the project folder: remove unneeded files, fix ignore rules, keep voice data out of the repository | Claude, owner confirms deletions | Only needed files remain; scan rejects audio and secrets | ✅ 2026-11-26 `.gitignore` bug fixed, recordings moved out; owner chose to keep `dist/` |
 
 ## Stage 1 — Phone-ready web app (about 1–2 weeks)
 
@@ -96,7 +96,7 @@ Closes the known limits listed in `docs/PHASE1_ARCHITECTURE.md` section 2. Depen
 | 3.4 | Audit log to write-once storage, retention rules, alerts on unusual access | Claude, Ext for storage | Tamper test passes against external storage | ⬜ |
 | 3.5 | Account management: password change and reset, second-factor enrolment, user admin, break-glass access with alerts | Claude | Flows tested; reviewed | ⬜ |
 | 3.6 | Transcript edit history (who changed which line when) in the audit log | Claude | Edits visible to the auditor role | ⬜ |
-| 3.7 | HTTPS in production, HSTS, security headers on the real host, certificate plan for phones | Claude, Ext for the host | Scanner grade acceptable | ⬜ |
+| 3.7 | Internet-facing hardening: public HTTPS and HSTS, reverse proxy or firewall, speech service kept private, alerts on login anomalies, DoS plan (`docs/MOBILE_PLAN.md` section 8) | Claude, Ext for the host | Scanner grade acceptable | ⬜ |
 
 ## Stage 4 — Native iPhone and Android apps (about 3–5 weeks)
 
@@ -106,7 +106,7 @@ Closes the known limits listed in `docs/PHASE1_ARCHITECTURE.md` section 2. Depen
 | 4.2 | Secure storage for tokens (Keychain / Keystore), app lock with biometrics or PIN, idle lock | Claude | Tokens are not in web storage; lock tested | ⬜ |
 | 4.3 | Screenshot block, hidden app-switcher preview, exclude data from backups, clipboard off for transcripts | Claude | Checked on both platforms | ⬜ |
 | 4.4 | Recording behaviour: clear recording indicator, screen stays on, interruptions handled, no audio written to storage | Claude | Test cases pass | ⬜ |
-| 4.5 | iPhone build and TestFlight (needs a Mac or a cloud macOS builder, plus an Apple account) | Owner provides the builder, Claude configures | Testers can install on iPhone | ⬜ |
+| 4.5 | iPhone build and TestFlight through a cloud macOS builder (no Mac available), plus an Apple account | Owner creates accounts and approves the builder, Claude configures | Testers can install on iPhone | ⬜ |
 | 4.6 | Internal distribution for Android (direct install or Google internal testing) | Claude, owner account | Testers can install on Android | ⬜ |
 | 4.7 | Lost-phone procedure: remote session revocation, written steps for the clinic | Claude drafts, Ext reviews | Procedure tested | ⬜ |
 
@@ -130,7 +130,7 @@ Start each only after the matching answer arrives; design notes already exist in
 | 6.2 | Authorization, replay and token tests for the mobile API; fuzzing of the audio and API endpoints | Claude | Tests pass | ⬜ |
 | 6.3 | Language-model attack tests re-run with the real model; extraction test set grown | Claude, needs API key | Results recorded | ⬜ |
 | 6.4 | Mobile security review (storage, lock, backups, network, tampering) | Ext | No open critical or high findings | ⬜ |
-| 6.5 | Independent penetration test of API, apps and infrastructure; fix and retest | Ext | Report with no open critical or high findings | ⬜ |
+| 6.5 | Independent penetration test, tested from the internet, of API, apps and infrastructure; fix and retest | Ext | Report with no open critical or high findings | ⬜ |
 | 6.6 | Independent code review of authentication, signing, audit and data access | Ext | Report closed | ⬜ |
 | 6.7 | Privacy impact assessment signed by the data-protection contact and lawyer | Owner, Ext | Signed | ⬜ |
 | 6.8 | Clinical safety review of allergy logic, templates and the whole workflow | Practising doctors, pharmacist | Signed hazard analysis | ⬜ |
