@@ -22,7 +22,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 
 | Stage | Status | Steps done / total | Notes |
 |---|---|---|---|
-| 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 3 partly done, 2 waiting on the owner |
+| 0 — Housekeeping and decisions | 🟡 In progress | 1 / 8 | 4 partly done (including 0.1: committed, not pushed), 2 waiting on the owner |
 | 1 — Phone-ready web app | ⬜ Not started | 0 / 6 | Can start now |
 | 2 — Speech quality | ⬜ Not started | 0 / 8 | Already measured: the `small` model on the owner's voice (`docs/ASR_DESIGN.md` section 9). Step 2.1 starts with the owner's OK for a 1.62 GB download |
 | 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
@@ -32,12 +32,12 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 | 7 — Pilot | ⬜ Not started | 0 / 5 | Only after every release gate |
 | 8 — Operate | ⬜ Not started | — | |
 
-Evidence for ✅ items: 0.1 — all tests, the build and the secret scan passed before the commit; 0.2 — the 11 project copies were checked byte for byte against the originals in `C:\Users\User\medsync-asr\recordings` and moved to `C:\Users\User\medsync-asr\duplicates-from-project`.
+Evidence: 0.1 — all tests, the build and the secret scan passed before the local commit `a09c206`; GitHub is still two commits behind until the owner approves the push. 0.2 (✅) — the 11 project copies were checked byte for byte against the originals in `C:\Users\User\medsync-asr\recordings` and moved to `C:\Users\User\medsync-asr\duplicates-from-project`.
 
 ### Changelog
 | Date | Change |
 |---|---|
-| 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created |
+| 2026-11-26 | Plan written. Stage 0: pending work committed locally (not pushed yet); recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created |
 
 How this is maintained: whenever a step moves, its Status cell, the stage counts, the evidence line and the changelog are updated, and `SECURITY_PLAN.md` gets a matching changelog row if the step is security-related.
 
@@ -47,7 +47,7 @@ How this is maintained: whenever a step moves, its Status cell, the stage counts
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 0.1 | Commit and push the work done since the last push (speech, recording tools, plans) | Claude, on the owner's go-ahead | GitHub matches the computer; CI is green | ✅ 2026-11-26 |
+| 0.1 | Commit and push the work done since the last push (speech, recording tools, plans) | Claude, on the owner's go-ahead | GitHub matches the computer; CI is green | 🟡 committed locally (a09c206); push waits for the owner's OK |
 | 0.2 | Move the real voice recordings out of the OneDrive project folder (`docs/recordings/`) | Owner | Folder not inside the project | ✅ 2026-11-26 |
 | 0.3 | Turn on branch protection for `main` on GitHub | Owner | Settings → Branches rule exists | 🚫 owner |
 | 0.4 | Answer: Mac available? Android Studio OK? How do phones reach the server (clinic Wi-Fi, VPN, internet)? | Owner | Answers recorded in `docs/MOBILE_PLAN.md` | 🚫 owner |
