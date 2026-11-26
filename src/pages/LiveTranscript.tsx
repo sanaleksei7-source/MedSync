@@ -72,7 +72,16 @@ export default function LiveTranscript({
     try {
       const seg = new Segmenter({ sampleRate: CAPTURE_RATE });
       segmenter.current = seg;
-      capture.current = await startCapture((frame) => seg.push(frame).forEach(enqueue));
+      capture.current = await startCapture((frame) => seg.push(frame).forEach(enqueue), {
+        onInterrupt: (reason) => {
+          // Не теряем то, что уже наговорили: дорасшифровываем остаток и просим начать запись снова.
+          capture.current = null;
+          segmenter.current?.flush().forEach(enqueue);
+          segmenter.current = null;
+          setRecording(false);
+          setError(`Запись прервалась (${reason}). Проверьте текст и нажмите «Начать запись», чтобы продолжить.`);
+        },
+      });
       setRecording(true);
     } catch (e) {
       segmenter.current = null;
@@ -122,7 +131,7 @@ export default function LiveTranscript({
         шаг, он тоже допустим только для вымышленных данных.
       </div>
       {!captureSupported() ? (
-        <p className="text-red-600">Этот браузер не поддерживает захват звука. Откройте демо в Chrome или Edge.</p>
+        <p className="text-red-600">Этот браузер не поддерживает захват звука. Откройте демо в Chrome, Edge или Safari.</p>
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-3">
