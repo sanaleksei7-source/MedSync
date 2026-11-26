@@ -28,8 +28,8 @@ const server = http.createServer();
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const port = (server.address() as AddressInfo).port;
 let asrCalls = 0;
-let asrBehavior: () => Promise<string> = async () => "Температура тридцать семь и восемь.";
-const fakeAsr: AsrEngine = { name: "fake", transcribe: async () => { asrCalls++; return asrBehavior(); } };
+let asrBehavior: () => Promise<string | { text: string; words?: { w: string; p: number }[] }> = async () => "Температура тридцать семь и восемь.";
+const fakeAsr: AsrEngine = { name: "fake", transcribe: async () => { asrCalls++; const r = await asrBehavior(); return typeof r === "string" ? { text: r } : r; } };
 const deps: Parameters<typeof createHandler>[0] = {
   users,
   asr: fakeAsr,
@@ -154,6 +154,12 @@ check("speech is transcribed by the engine", ok1.status === 200 && ok1.body.text
 asrBehavior = async () => "Продолжение следует...";
 const hal = await callRaw("/api/asr", speech, { cookie: doc });
 check("hallucination is dropped", hal.status === 200 && hal.body.text === "" && hal.body.dropped === "hallucination");
+asrBehavior = async () => "[звук растрейки]";
+const ann = await callRaw("/api/asr", speech, { cookie: doc });
+check("sound annotation is dropped", ann.status === 200 && ann.body.text === "" && ann.body.dropped === "annotation");
+asrBehavior = async () => ({ text: "Амоксицилин 500", words: [{ w: "Амоксицилин", p: 0.2 }, { w: "500", p: 0.98 }] });
+const conf = await callRaw("/api/asr", speech, { cookie: doc });
+check("word confidence is passed to the client", conf.status === 200 && conf.body.words?.[0]?.p === 0.2);
 asrBehavior = async () => { throw new Error("SECRET internal detail"); };
 const boom = await callRaw("/api/asr", speech, { cookie: doc });
 check("engine failure → 502 without details", boom.status === 502 && !JSON.stringify(boom.body).includes("SECRET"));

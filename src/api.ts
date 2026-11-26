@@ -21,7 +21,7 @@ export async function api<T>(method: "GET" | "POST", path: string, body?: unknow
 }
 
 /** Отправка звука (PCM 16 кГц, Int16) на локальное распознавание. */
-export async function apiAudio(path: string, pcm: Int16Array): Promise<{ text: string; dropped?: string }> {
+export async function apiAudio(path: string, pcm: Int16Array): Promise<{ text: string; words?: { w: string; p: number }[]; dropped?: string }> {
   const bytes = new Uint8Array(pcm.byteLength);
   bytes.set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
   const r = await fetch(path, {
@@ -32,7 +32,7 @@ export async function apiAudio(path: string, pcm: Int16Array): Promise<{ text: s
   });
   const data = await r.json().catch(() => null);
   if (!r.ok) throw new ApiError(r.status, (data as { error?: string } | null)?.error ?? `Ошибка ${r.status}`, data);
-  return data as { text: string; dropped?: string };
+  return data as { text: string; words?: { w: string; p: number }[]; dropped?: string };
 }
 
 export interface Me {

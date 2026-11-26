@@ -1,4 +1,17 @@
 node_modules
 dist
 .env
-data/
+/data/
+
+# Записи голоса и тестовые аудио никогда не коммитим
+docs/recordings/
+*.m4a
+*.mp3
+*.wav
+*.mp4
+*.aac
+*.ogg
+*.opus
+*.flac
+*.amr
+*.3gp

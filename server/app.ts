@@ -5,7 +5,7 @@ import { LoginThrottle, SessionStore, verifyPassword, verifyTotp } from "./auth"
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
-import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, rms, type AsrEngine } from "./asr/engine";
+import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
 import { findConflicts } from "../src/data/allergy";
 import { patients } from "../src/data/patients";
 import { finalizeSections, signBlockers, type Decisions } from "../src/domain/rules";
@@ -192,9 +192,10 @@ export function createHandler(deps: Deps) {
       log({ actor: user.id, action: "asr.segment", detail: { seconds: Math.round(seconds * 10) / 10 } });
       if (rms(pcm) < SILENCE_RMS) return send(res, 200, { text: "", dropped: "silence" });
       try {
-        const text = await deps.asr.transcribe(pcm);
+        const { text, words } = await deps.asr.transcribe(pcm);
         if (isHallucination(text)) return send(res, 200, { text: "", dropped: "hallucination" });
-        return send(res, 200, { text });
+        if (isNonSpeechAnnotation(text)) return send(res, 200, { text: "", dropped: "annotation" });
+        return send(res, 200, words ? { text, words } : { text });
       } catch {
         return send(res, 502, { error: "Сервис распознавания недоступен" }); // детали и текст не раскрываем и не пишем
       }

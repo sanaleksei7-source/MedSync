@@ -4,11 +4,16 @@ import type { DraftSource } from "./Appointment";
 import { api, apiAudio, ApiError } from "../api";
 import { CAPTURE_RATE, captureSupported, startCapture, type Capture } from "../audio/capture";
 import { Segmenter, toInt16 } from "../audio/segmenter";
+import { applySuggestion, suggestDrug } from "../audio/suggest";
+
+/** Слова, в которых модель сомневается (уверенность ниже порога), подсвечиваются. Порог выбран по малой выборке и требует перепроверки. */
+const UNCERTAIN_BELOW = 0.7; // на 11 записях: при 0.5 ловится 49 % ошибок (7 % ложных тревог), при 0.7 — 76 % (20 %)
 
 interface Row {
   id: number;
   speaker: "Врач" | "Пациент";
   text: string;
+  words?: { w: string; p: number }[]; // уверенность модели по словам; пропадает, если врач правил текст
   pending: boolean;
 }
 
@@ -26,6 +31,7 @@ export default function LiveTranscript({
   const [type, setType] = useState<DocType>("osmotr");
   const [busy, setBusy] = useState(false);
   const [dropped, setDropped] = useState(0);
+  const [editing, setEditing] = useState<number | null>(null);
   const speakerRef = useRef(speaker);
   speakerRef.current = speaker;
   const capture = useRef<Capture | null>(null);
@@ -41,7 +47,7 @@ export default function LiveTranscript({
     queue.current = queue.current.then(async () => {
       try {
         const res = await apiAudio("/api/asr", pcm);
-        if (res.text.trim()) setRows((r) => r.map((x) => (x.id === id ? { ...x, text: res.text.trim(), pending: false } : x)));
+        if (res.text.trim()) setRows((r) => r.map((x) => (x.id === id ? { ...x, text: res.text.trim(), words: res.words, pending: false } : x)));
         else {
           setRows((r) => r.filter((x) => x.id !== id));
           setDropped((n) => n + 1);
@@ -143,19 +149,54 @@ export default function LiveTranscript({
                   {r.pending ? (
                     <span className="text-slate-400">…</span>
                   ) : (
-                    <>
-                      <input
-                        value={r.text}
-                        onChange={(e) => setRows((all) => all.map((x) => (x.id === r.id ? { ...x, text: e.target.value } : x)))}
-                        className="min-w-0 flex-1 rounded border border-transparent px-1 hover:border-slate-300 focus:border-teal-500"
-                        aria-label={`Реплика ${r.id}`}
-                      />
-                      <button onClick={() => setRows((all) => all.filter((x) => x.id !== r.id))} className="text-slate-400 hover:text-red-600" aria-label={`Удалить реплику ${r.id}`}>✕</button>
-                    </>
+                    <div className="min-w-0 flex-1">
+                      {editing === r.id || !r.words ? (
+                        <input
+                          autoFocus={editing === r.id}
+                          value={r.text}
+                          onChange={(e) => setRows((all) => all.map((x) => (x.id === r.id ? { ...x, text: e.target.value, words: undefined } : x)))}
+                          onBlur={() => setEditing(null)}
+                          className="w-full rounded border border-transparent px-1 hover:border-slate-300 focus:border-teal-500"
+                          aria-label={`Реплика ${r.id}`}
+                        />
+                      ) : (
+                        <button type="button" onClick={() => setEditing(r.id)} className="w-full cursor-text rounded px-1 text-left hover:bg-slate-50" title="Нажмите, чтобы исправить">
+                          {r.words.map((w, i) => (
+                            <span
+                              key={i}
+                              title={w.p < UNCERTAIN_BELOW ? `Модель не уверена (${Math.round(w.p * 100)} %)` : /\d/.test(w.w) ? "Число: проверьте" : undefined}
+                              className={w.p < UNCERTAIN_BELOW ? "rounded bg-yellow-200 px-0.5" : /\d/.test(w.w) ? "border-b-2 border-sky-400" : ""}
+                            >
+                              {w.w}{" "}
+                            </span>
+                          ))}
+                        </button>
+                      )}
+                      {!r.pending && r.text.split(/\s+/).map((word) => ({ word, drug: suggestDrug(word) })).filter((x) => x.drug).map((x, i) => (
+                        <div key={i} className="mt-0.5 text-xs text-amber-800">
+                          Возможно, «{x.drug}», а не «{x.word.replace(/[^\p{L}]/gu, "")}»?{" "}
+                          <button
+                            className="rounded border border-amber-400 bg-amber-50 px-1.5"
+                            onClick={() => setRows((all) => all.map((y) => (y.id === r.id ? { ...y, text: applySuggestion(y.text, x.word, x.drug!), words: undefined } : y)))}
+                          >
+                            Заменить
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!r.pending && (
+                    <button onClick={() => setRows((all) => all.filter((x) => x.id !== r.id))} className="text-slate-400 hover:text-red-600" aria-label={`Удалить реплику ${r.id}`}>✕</button>
                   )}
                 </li>
               ))}
             </ol>
+            {rows.some((r) => r.words) && (
+              <p className="mt-2 text-xs text-slate-500">
+                <span className="rounded bg-yellow-200 px-0.5">жёлтым</span> — слова, в которых модель сомневается;{" "}
+                <span className="border-b-2 border-sky-400">подчёркнутые</span> — числа. Модель бывает уверена и в ошибках, поэтому читайте всё.
+              </p>
+            )}
             {dropped > 0 && <p className="mt-2 text-xs text-slate-400">Отброшено фрагментов без речи или с шумом: {dropped}</p>}
             {usable.length > 0 && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">

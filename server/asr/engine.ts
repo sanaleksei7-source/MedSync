@@ -7,10 +7,21 @@ export const MAX_SECONDS = 30;
 /** Среднеквадратичная громкость ниже порога считается тишиной (шкала Int16). */
 export const SILENCE_RMS = 150;
 
+/** Слово и уверенность модели в нём (0…1). Низкая уверенность — повод для врача посмотреть слово. */
+export interface AsrWord {
+  w: string;
+  p: number;
+}
+
+export interface AsrResult {
+  text: string;
+  words?: AsrWord[];
+}
+
 export interface AsrEngine {
   readonly name: string;
-  /** PCM 16 кГц, моно, Int16. Возвращает текст сегмента. */
-  transcribe(pcm: Int16Array): Promise<string>;
+  /** PCM 16 кГц, моно, Int16. Возвращает текст сегмента и, если сервис умеет, уверенность по словам. */
+  transcribe(pcm: Int16Array): Promise<AsrResult>;
 }
 
 export function rms(pcm: Int16Array): number {
@@ -100,15 +111,46 @@ export function isHallucination(text: string): boolean {
   return n.length > 0 && HALLUCINATIONS.some((h) => n.includes(h));
 }
 
+/** Описания звуков вместо речи: «[звук растрейки]», «(смех)», «[Музыка]». Это не слова врача или пациента. */
+export function isNonSpeechAnnotation(text: string): boolean {
+  const t = text.trim();
+  return t.length > 0 && /^(?:\s*[\[(][^\])]*[\])]\s*)+$/u.test(t);
+}
+
+/** Склеивает подслова модели в слова. Уверенность слова — минимальная из его частей; знаки препинания её не меняют. */
+export function mergeTokens(tokens: { word: string; probability: number }[]): AsrWord[] {
+  const out: AsrWord[] = [];
+  let prefix = ""; // открывающие знаки («, «-», «[») прикрепляются к следующему слову
+  for (const tk of tokens) {
+    const piece = tk.word;
+    if (!piece.trim() || /^\[_[A-Za-z]+(?:_\d*)?\]$/.test(piece.trim())) continue; // служебные метки
+    const leadingSpace = /^\s/.test(piece);
+    if (/^[\p{P}\s]+$/u.test(piece)) {
+      if (leadingSpace || out.length === 0) prefix += piece.trim();
+      else out[out.length - 1].w += piece.trim(); // знак после слова; уверенность не меняет
+      continue;
+    }
+    if (leadingSpace || out.length === 0 || prefix !== "") {
+      out.push({ w: prefix + piece.trim(), p: tk.probability });
+      prefix = "";
+    } else {
+      const last = out[out.length - 1];
+      last.w += piece.trim();
+      last.p = Math.min(last.p, tk.probability);
+    }
+  }
+  return out.map((x) => ({ w: x.w, p: Math.round(x.p * 100) / 100 }));
+}
+
 // ---- Движки ----
 
 /** Для проверки цепочки микрофон → сервер без модели. Текст помечен явно. */
 export class MockEngine implements AsrEngine {
   readonly name = "mock";
   private n = 0;
-  async transcribe(pcm: Int16Array): Promise<string> {
+  async transcribe(pcm: Int16Array): Promise<AsrResult> {
     this.n++;
-    return `[тестовое распознавание ${this.n}: ${(pcm.length / SAMPLE_RATE).toFixed(1)} с]`;
+    return { text: `[тестовое распознавание ${this.n}: ${(pcm.length / SAMPLE_RATE).toFixed(1)} с]` };
   }
 }
 
@@ -116,25 +158,31 @@ export class MockEngine implements AsrEngine {
 export class HttpWhisperEngine implements AsrEngine {
   readonly name = "whisper.cpp-http";
   private base: URL;
-  constructor(url: string, allowRemote = false, private timeoutMs = 60_000) {
+  /** withConfidence: запрашивать уверенность по словам. На слабом процессоре это примерно вдвое медленнее. */
+  constructor(url: string, allowRemote = false, private withConfidence = true, private timeoutMs = 120_000) {
     this.base = assertAllowedAsrUrl(url, allowRemote);
   }
-  async transcribe(pcm: Int16Array): Promise<string> {
+  async transcribe(pcm: Int16Array): Promise<AsrResult> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(pcmToWav(pcm))], { type: "audio/wav" }), "segment.wav");
     form.append("language", "ru");
     form.append("temperature", "0.0");
-    form.append("response_format", "json");
+    form.append("response_format", this.withConfidence ? "verbose_json" : "json");
     const r = await fetch(new URL("/inference", this.base), { method: "POST", body: form, signal: AbortSignal.timeout(this.timeoutMs) });
     if (!r.ok) throw new Error(`ASR service returned ${r.status}`);
-    const data = (await r.json()) as { text?: unknown };
+    const data = (await r.json()) as { text?: unknown; segments?: { words?: { word?: unknown; probability?: unknown }[] }[] };
     if (typeof data.text !== "string") throw new Error("ASR service returned an unexpected response");
-    return data.text.trim();
+    const tokens = (data.segments ?? [])
+      .flatMap((sg) => sg.words ?? [])
+      .filter((x): x is { word: string; probability: number } => typeof x.word === "string" && typeof x.probability === "number");
+    const result: AsrResult = { text: data.text.trim() };
+    if (tokens.length > 0) result.words = mergeTokens(tokens);
+    return result;
   }
 }
 
 export function engineFromEnv(env: NodeJS.ProcessEnv): AsrEngine | null {
   if (env.ASR_ENGINE === "mock") return new MockEngine();
-  if (env.ASR_URL) return new HttpWhisperEngine(env.ASR_URL, env.ASR_ALLOW_REMOTE === "1");
+  if (env.ASR_URL) return new HttpWhisperEngine(env.ASR_URL, env.ASR_ALLOW_REMOTE === "1", env.ASR_CONFIDENCE !== "0");
   return null;
 }

@@ -4,7 +4,7 @@
 // WAV: PCM 16 бит, моно, 16000 Гц. Только вымышленные записи: реальных пациентов сюда не класть.
 import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HttpWhisperEngine, SAMPLE_RATE, isHallucination, wavToPcm } from "../server/asr/engine";
+import { HttpWhisperEngine, SAMPLE_RATE, isHallucination, isNonSpeechAnnotation, wavToPcm } from "../server/asr/engine";
 import { DRUG_LEXICON } from "../server/asr/lexicon";
 import { cer, hallucinationPerMinute, negationDiff, numberRecall, termRecall, wer } from "../server/asr/metrics";
 
@@ -13,7 +13,7 @@ if (!dir || !process.env.ASR_URL) {
   console.error("Использование: ASR_URL=http://127.0.0.1:8080 npm run asr:eval -- <папка с wav и txt>");
   process.exit(1);
 }
-const engine = new HttpWhisperEngine(process.env.ASR_URL, process.env.ASR_ALLOW_REMOTE === "1");
+const engine = new HttpWhisperEngine(process.env.ASR_URL, process.env.ASR_ALLOW_REMOTE === "1", process.env.ASR_CONFIDENCE !== "0");
 const CHUNK = 25 * SAMPLE_RATE;
 
 async function transcribeFile(path: string) {
@@ -22,7 +22,7 @@ async function transcribeFile(path: string) {
   const parts: string[] = [];
   for (let i = 0; i < pcm.length; i += CHUNK) parts.push(await engine.transcribe(pcm.subarray(i, i + CHUNK)));
   const seconds = pcm.length / SAMPLE_RATE;
-  return { text: parts.join(" "), seconds, rtf: (Date.now() - started) / 1000 / seconds };
+  return { text: parts.map((x) => x.text).join(" "), seconds, rtf: (Date.now() - started) / 1000 / seconds };
 }
 
 const files = readdirSync(dir).filter((f) => f.endsWith(".wav")).sort();
@@ -34,8 +34,11 @@ for (const f of files) {
   const wav = join(dir, f);
   if (f.startsWith("silence")) {
     const r = await transcribeFile(wav);
-    if (isHallucination(r.text)) silenceDropped++;
-    silenceWords += r.text.trim() ? r.text.trim().split(/\s+/).length : 0;
+    const filtered = isHallucination(r.text) || isNonSpeechAnnotation(r.text);
+    const empty = !r.text.trim();
+    console.log(`  ${f} (тишина/шум): «${r.text.trim()}»${empty ? "  [пусто: хорошо]" : filtered ? "  [отфильтровано сервером]" : "  [ПРОШЛО К ВРАЧУ]"}`);
+    if (filtered) silenceDropped++;
+    else silenceWords += r.text.trim() ? r.text.trim().split(/\s+/).length : 0; // считаем только то, что дошло бы до врача
     silenceSecs += r.seconds;
     continue;
   }
@@ -43,6 +46,9 @@ for (const f of files) {
   if (!existsSync(refPath)) { console.warn(`нет эталона для ${f}, пропущен`); continue; }
   const ref = readFileSync(refPath, "utf-8");
   const r = await transcribeFile(wav);
+  console.log(`  ${f}
+    эталон: «${ref.trim()}»
+    модель: «${r.text.trim()}»`);
   const tr = termRecall(ref, r.text, DRUG_LEXICON);
   const nr = numberRecall(ref, r.text);
   const ng = negationDiff(ref, r.text);
@@ -65,7 +71,8 @@ const summary = {
   negationErrors: sum.neg,
   meanRealTimeFactor: sum.n ? +(sum.rtf / sum.n).toFixed(2) : null,
   silenceWordsPerMinute: silenceSecs ? +hallucinationPerMinute("x ".repeat(silenceWords), silenceSecs).toFixed(2) : null,
-  silenceFilesFlaggedAsHallucination: silenceDropped,
+  silenceFilesFilteredByServer: silenceDropped,
+  silenceFilesTotal: files.filter((f) => f.startsWith("silence")).length,
 };
 console.log(summary);
 if (process.argv[3]) writeFileSync(process.argv[3], JSON.stringify({ summary, rows }, null, 2));

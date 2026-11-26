@@ -20,7 +20,9 @@ function validDate(pin: string): boolean {
 }
 
 let bad = 0;
+const AUDIO = /\.(m4a|mp3|wav|mp4|aac|ogg|opus|flac|amr|3gp|webm)$/i;
 for (const f of files) {
+  if (AUDIO.test(f)) { bad++; console.error(`Audio file is tracked (voice data must not be committed): ${f}`); continue; }
   if (skip.test(f)) continue;
   let text: string;
   try { text = readFileSync(f, "utf-8"); } catch { continue; }
