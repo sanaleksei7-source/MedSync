@@ -24,7 +24,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 |---|---|---|---|
 | 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 4 partly done (0.1 CI result unchecked, 0.4 one question open, 0.5 and 0.7 need the owner), 0.3 and 0.6 waiting on the owner |
 | 1 — Phone-ready web app | 🟡 In progress | 1 / 6 | 1.1 built, checked at 375 px with a stubbed login; needs a real-phone look (1.6). Mobbin references were not used (connector not connected) |
-| 2 — Speech quality | ⬜ Not started | 0 / 8 | Already measured: the `small` model on the owner's voice (`docs/ASR_DESIGN.md` section 9). Step 2.1 starts with the owner's OK for a 1.62 GB download |
+| 2 — Speech quality | 🟡 In progress | 1 / 8 | 2.1 done: bigger model is clearly better (18 % word errors, 4/10 drugs) but too slow on CPU (about 7× real time), so the GPU test (2.3) is now the key question. `docs/ASR_DESIGN.md` sections 9 and 9.1 |
 | 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
 | 4 — Native iPhone and Android apps | ⬜ Not started | 0 / 7 | Needs Stage 1; iPhone needs a Mac or cloud builder |
 | 5 — Legal-gated integrations | 🚫 Waiting | 0 / 5 | Needs lawyer, Минздрав and vendor answers |
@@ -38,6 +38,7 @@ Evidence: 0.1 — all tests, the build and the secret scan passed before commit 
 | Date | Change |
 |---|---|
 | 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created. Owner's answers recorded: no Mac, phones over the internet, keep `dist/` |
+| 2026-11-27 | Step 2.1 done: `large-v3-turbo` downloaded with the owner's OK (checksum verified) and tested on the 11 recordings; results in `docs/ASR_DESIGN.md` 9.1 |
 | 2026-11-26 | Step 1.6 prepared: phone test checklist written; waiting for the owner to run it |
 | 2026-11-26 | Step 1.5 built (installable web version, no data caching); phone check pending |
 | 2026-11-26 | Step 1.4 built (HTTPS on the LAN for phone tests); phone check pending |
@@ -81,7 +82,7 @@ Decides whether "record the whole conversation" is viable. The `small` model got
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 2.1 | Download and test `large-v3-turbo` (and optionally `medium`) on this CPU with the 11 recordings (owner's OK needed for each download) | Claude, owner approves | Comparison table in `docs/ASR_DESIGN.md` | ⬜ |
+| 2.1 | Download and test `large-v3-turbo` (and optionally `medium`) on this CPU with the 11 recordings (owner's OK needed for each download) | Claude, owner approves | Comparison table in `docs/ASR_DESIGN.md` | ✅ `large-v3-turbo` tested on 2026-11-27 (table in `docs/ASR_DESIGN.md` section 9.1): word error rate 27 % → 18 %, drug names 1/10 → 4/10, numbers 91 % → 95.5 %, but about 7× slower than real time on this CPU. `medium` was not downloaded or tested |
 | 2.2 | Record the script again on **phones** in clinic-like rooms, with several speakers, plus silence and noise files; target 30–60 minutes | Owner and colleagues | Recordings collected, kept outside the repository | ⬜ |
 | 2.3 | GPU speed test on an NVIDIA machine (own PC, rented GPU for a few hours, or clinic server) | Owner provides the machine, Claude runs | Speed and accuracy numbers recorded | ⬜ |
 | 2.4 | Replace the demo drug list with the clinic formulary; improve suggestions (phonetic matching, forms and doses) | Claude | Suggestion coverage re-measured on the recordings | ⬜ |

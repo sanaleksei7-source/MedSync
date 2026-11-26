@@ -181,3 +181,22 @@ The page now uses 0.7. The sample is small, so the threshold must be re-checked 
 **Drug suggestions** (`src/audio/suggest.ts`, demo drug list): of the 10 drug mentions, 1 was already right, **5 would be corrected by a suggestion the doctor accepts**, and 4 stay lost because the model's output was too far from the real name ("расциктамол", "в укуфе", "амладит пин" split in two). The suggestions depend on the drug list; a drug missing from it gets none.
 
 **Conclusion.** `small` on a laptop CPU is not good enough to trust for medical terms, and about half the model's mistakes are not marked by its own confidence. The doctor must review every line, which is what the page now says. A larger model on a GPU is the real next test; it should be run on this same set.
+
+### 9.1 Larger model on the same CPU: `large-v3-turbo` (2026-11-27)
+
+Same 11 recordings, same machine (CPU only), per-word confidence on, model file checked against its published SHA-256. Still one speaker, one room, one phone.
+
+| Measure | `small` | `large-v3-turbo` |
+|---|---|---|
+| Word error rate (mean) | 27 % | **18 %** |
+| Character error rate | 11 % | **9.7 %** |
+| Drug names recognized correctly | 1 of 10 | **4 of 10** |
+| Numbers matching the reference | 91 % | **95.5 %** |
+| Lost or added "не / нет" | 0 | 0 |
+| Speed (processing time ÷ audio time) | about 1.1× plain, about 2× with confidence | **about 7×** |
+
+What got better: pharmacy words came closer (фурацелина, Ибупруфен, Амепрозол, амладидпин) and sentences were cleaner. What did not: 6 of 10 drug names are still wrong or damaged, and "850 мг" still became "80-50 мг". The model is also not safe in the sense of review: wrong names look plausible ("Острый танзелит" for тонзиллит).
+
+**Speed is the problem.** At about 7× real time, one minute of conversation takes about seven minutes to transcribe on this laptop CPU. That cannot keep up with a visit, so this model needs a GPU (step 2.3) or a different design. The `medium` model was not tested (not downloaded).
+
+**Reading.** A bigger model helps (error rate about a third lower, drug names 4 times better) but does not remove the need for the doctor to check every drug and number, and it is far too slow without a GPU. Drug suggestions and a formulary picker (steps 2.4 and 2.5) are still needed. The GPU test should use this same model and set.
