@@ -195,7 +195,9 @@ const exFail = await post(doc, `/api/visits/${vid}/extract`);
 check("model failure → 502, visit keeps its draft", exFail.status === 502 && (await call("GET", `/api/visits/${vid}`, { cookie: doc })).body.sections !== null);
 extractFails = false;
 await post(doc, `/api/visits/${vid}/transcript`, { lines });
-check("new transcript invalidates the old draft and decisions", (await call("GET", `/api/visits/${vid}`, { cookie: doc })).body.sections === null);
+check("re-sending the same transcript changes nothing and keeps the draft", (await call("GET", `/api/visits/${vid}`, { cookie: doc })).body.sections !== null);
+await post(doc, `/api/visits/${vid}/transcript`, { lines: [...lines, { id: 15, speaker: "Врач", text: "Контроль через неделю." }] });
+check("a changed transcript invalidates the old draft and decisions", (await call("GET", `/api/visits/${vid}`, { cookie: doc })).body.sections === null);
 
 // решения врача
 const vs = await liveVisit();
@@ -405,6 +407,53 @@ check("the alert is written to the audit log by the system", audit.some((r) => r
 check("alerts carry no names or medical text", !JSON.stringify(al0.body).includes("Иванова") && !JSON.stringify(al0.body).includes("Боль"));
 check("doctor cannot read alerts", (await call("GET", "/api/audit/alerts", { cookie: docA })).status === 403);
 check("alerts need a session", (await call("GET", "/api/audit/alerts")).status === 401);
+
+// --- история правок расшифровки (шаг 3.6) ---
+const callAsr = (cookie: string, path: string, bytes: Buffer, speaker?: string, ct = "application/octet-stream") =>
+  fetch(base + path, { method: "POST", headers: { "Content-Type": ct, "X-Requested-With": "medsync", "X-Sample-Rate": "16000", Cookie: cookie, ...(speaker ? { "X-Speaker": speaker } : {}) }, body: new Uint8Array(bytes) })
+    .then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+asrBehavior = async () => "Температура тридцать семь и восемь.";
+const ev = (await post(docA, "/api/visits", { patientId: "p1", docType: "osmotr" })).body;
+const vPath = `/api/visits/${ev.id}`;
+check("visit speech needs X-Speaker and audio content type", (await callAsr(docA, `${vPath}/asr`, speech)).status === 400 && (await callAsr(docA, `${vPath}/asr`, speech, "doctor", "application/json")).status === 415 && (await callAsr(docA, `${vPath}/asr`, speech, "nurse")).status === 400);
+const a1 = await callAsr(docA, `${vPath}/asr`, speech, "doctor");
+asrBehavior = async () => "Болит горло третий день.";
+const a2 = await callAsr(docA, `${vPath}/asr`, speech, "patient");
+check("recognised speech is added to the visit by the server, in order", a1.status === 200 && a1.body.line.id === 1 && a1.body.line.speaker === "Врач" && a2.body.line.id === 2 && a2.body.line.speaker === "Пациент" && (await call("GET", vPath, { cookie: docA })).body.lines.length === 2);
+check("silence adds no line", (await callAsr(docA, `${vPath}/asr`, pcmBytes(1.5, 0), "doctor")).body.dropped === "silence" && (await call("GET", vPath, { cookie: docA })).body.lines.length === 2);
+check("speech cannot be added to a demo visit or someone else's visit", (await callAsr(docA, `/api/visits/${(await post(docA, "/api/visits", { patientId: "p1", docType: "osmotr", demo: true })).body.id}/asr`, speech, "doctor")).status === 409 && (await callAsr(doc2, `${vPath}/asr`, speech, "doctor")).status === 404);
+
+const ops = (body: unknown, cookie = docA) => post(cookie, `${vPath}/lines`, body);
+const e1 = await ops({ ops: [{ op: "edit", id: 1, text: "Температура 37,8." }] });
+check("the doctor's edit is kept with the recognised text it replaced", e1.status === 200 && e1.body.lines[0].text === "Температура 37,8." && e1.body.lineLog.some((c: { op: string; lineId: number; before?: string; after?: string; actor: string }) => c.op === "edit" && c.lineId === 1 && c.before === "Температура тридцать семь и восемь." && c.after === "Температура 37,8." && c.actor === "doc1"));
+check("the history starts with what speech recognition produced", e1.body.lineLog[0].op === "asr" && e1.body.lineLog[0].after === "Температура тридцать семь и восемь." && e1.body.lineLog[1].op === "asr" && e1.body.lineLog[1].lineId === 2);
+const e2 = await ops({ ops: [{ op: "speaker", id: 2, speaker: "Врач" }, { op: "add", speaker: "Пациент", text: "И кашель." }, { op: "delete", id: 2 }] });
+check("speaker change, manual line and deletion are recorded", e2.status === 200 && e2.body.lines.map((l: { id: number }) => l.id).join() === "1,3" && ["speaker", "add", "delete"].every((op) => e2.body.lineLog.some((c: { op: string }) => c.op === op)) && e2.body.lineLog.find((c: { op: string }) => c.op === "delete").before === "Болит горло третий день.");
+const logLen = e2.body.lineLog.length;
+check("an edit that changes nothing is not recorded", (await ops({ ops: [{ op: "edit", id: 1, text: "Температура 37,8." }] })).body.lineLog.length === logLen);
+check("bad edits are refused and change nothing", (await ops({ ops: [{ op: "edit", id: 99, text: "x" }] })).status === 404 && (await ops({ ops: [{ op: "rename", id: 1 }] })).status === 400 && (await ops({ ops: [] })).status === 400 && (await ops({ ops: [{ op: "edit", id: 1, text: "" }] })).status === 400
+  && (await ops({ ops: [{ op: "edit", id: 1, text: "Новое" }, { op: "delete", id: 42 }] })).status === 404 && (await call("GET", vPath, { cookie: docA })).body.lines[0].text === "Температура 37,8.");
+check("other doctors cannot edit the transcript", (await ops({ ops: [{ op: "delete", id: 1 }] }, doc2)).status === 404);
+check("demo transcript cannot be edited", (await post(docA, `/api/visits/${demo.body.id}/lines`, { ops: [{ op: "delete", id: 1 }] })).status === 409);
+
+// черновик, правка после черновика, подпись
+extractResult = [{ title: "Жалобы", statements: [{ text: "Кашель.", sourceIds: [3] }] }, { title: "Диагноз", statements: [{ text: "ОРВИ", sourceIds: [] }] }];
+check("a draft can be built from the edited transcript", (await post(docA, `${vPath}/extract`)).body.sections?.length === 2);
+check("editing after the draft invalidates the draft", (await ops({ ops: [{ op: "edit", id: 3, text: "И сухой кашель." }] })).body.sections === null);
+await post(docA, `${vPath}/extract`);
+await post(docA, `${vPath}/decisions`, { changes: [{ key: "1-0", action: "kept" }] });
+const sg = await post(docA, `${vPath}/sign`);
+check("the edit history stays with the signed visit and cannot change any more", sg.status === 200 && sg.body.lineLog.length === logLen + 1 && (await ops({ ops: [{ op: "delete", id: 1 }] })).status === 409 && (await callAsr(docA, `${vPath}/asr`, speech, "doctor")).status === 409);
+
+// журнал аудита и аудитор
+const lineAudit = audit.filter((r) => r.action.startsWith("visit.line.") && r.target === ev.id);
+check("every line change is in the audit log: who, when, which line, what kind", lineAudit.map((r) => r.action.slice(11)).join() === "asr,asr,edit,speaker,add,delete,edit" && lineAudit.every((r) => r.actor === "doc1" && Object.keys(r.detail ?? {}).join() === "line"));
+check("line changes made by replacing the whole transcript are recorded too", audit.some((r) => r.action === "visit.line.add" && r.target === vid && r.detail?.line === 15));
+check("no transcript text in the audit log", !JSON.stringify(audit).includes("37,8") && !JSON.stringify(audit).includes("кашель") && !JSON.stringify(audit).includes("Болит горло третий"));
+const ae = await call("GET", `/api/audit/edits/${ev.id}`, { cookie: audA });
+check("the auditor sees the edit history of a visit without its text", ae.status === 200 && ae.body.edits.length === 7 && ae.body.edits[0].op === "edit" && ae.body.edits[0].line === 3 && ae.body.edits.every((x: { actor: string; visit: string }) => x.actor === "doc1" && x.visit === ev.id) && !JSON.stringify(ae.body).includes("кашель"));
+check("the auditor can list recent edits across visits", (await call("GET", "/api/audit/edits", { cookie: audA })).body.edits.some((x: { visit: string }) => x.visit === vid));
+check("doctors and admins cannot read the edit audit", (await call("GET", `/api/audit/edits/${ev.id}`, { cookie: docA })).status === 403 && (await call("GET", "/api/audit/edits", { cookie: adm })).status === 403);
 
 // --- учётные записи (шаг 3.5) ---
 const loginAs = async (username: string, password: string, secret: string) => {

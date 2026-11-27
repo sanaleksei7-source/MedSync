@@ -5,7 +5,7 @@ import { decrypt, encrypt, type Keyring } from "./crypto";
 import type { Db } from "./db";
 import { VersionConflictError, type Visit, type VisitStore } from "../visits";
 
-type Payload = Pick<Visit, "lines" | "sections" | "decisions" | "ackAllergy" | "changeLog" | "signed">;
+type Payload = Pick<Visit, "lines" | "sections" | "decisions" | "ackAllergy" | "changeLog" | "lineLog" | "signed">;
 
 export interface VisitRow {
   id: string;
@@ -42,6 +42,7 @@ export function rowToVisit(ring: Keyring, r: VisitRow): Visit {
     createdAt: iso(r.created_at),
     updatedAt: iso(r.updated_at),
     ...p,
+    lineLog: p.lineLog ?? [], // приёмы, сохранённые до шага 3.6, истории правок не имеют
   };
 }
 
@@ -54,7 +55,7 @@ export class PgVisitStore implements VisitStore {
   }
 
   async save(v: Visit): Promise<void> {
-    const payload: Payload = { lines: v.lines, sections: v.sections, decisions: v.decisions, ackAllergy: v.ackAllergy, changeLog: v.changeLog, signed: v.signed };
+    const payload: Payload = { lines: v.lines, sections: v.sections, decisions: v.decisions, ackAllergy: v.ackAllergy, changeLog: v.changeLog, lineLog: v.lineLog, signed: v.signed };
     const { keyId, blob } = encrypt(this.ring, JSON.stringify(payload), visitAad(v.id, v.ownerId, v.patientId));
     try {
       if (v.version === 0) {

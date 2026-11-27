@@ -26,6 +26,42 @@ const alertLabel: Record<string, string> = {
   "account.verify.burst": "Подбор при смене пароля",
 };
 
+const editLabel: Record<string, string> = { asr: "распознано", add: "добавлено вручную", edit: "исправлено", delete: "удалено", speaker: "сменён говорящий" };
+interface Edit { time: string; actor: string; visit: string; line: number; op: string }
+
+/** История правок расшифровки для аудитора: кто, когда, какую реплику и как менял. Текста здесь нет. */
+function EditsPanel() {
+  const [visit, setVisit] = useState("");
+  const [edits, setEdits] = useState<Edit[] | null>(null);
+  const [err, setErr] = useState("");
+  const load = async (id: string) => {
+    setErr("");
+    try { setEdits((await api<{ edits: Edit[] }>("GET", id ? `/api/audit/edits/${id}` : "/api/audit/edits")).edits); } catch (e) { setErr(e instanceof Error ? e.message : "Ошибка"); }
+  };
+  useEffect(() => { void load(""); }, []);
+  return (
+    <section className="rounded bg-white p-4 text-sm shadow-sm">
+      <h2 className="mb-2 font-medium">Правки расшифровки</h2>
+      <form onSubmit={(e) => { e.preventDefault(); void load(visit.trim()); }} className="mb-2 flex flex-wrap gap-2">
+        <input value={visit} onChange={(e) => setVisit(e.target.value)} placeholder="Номер приёма (пусто — последние)" className="min-w-0 flex-1 rounded border px-3 py-2 font-mono md:max-w-sm" />
+        <button className="rounded border px-3 py-2 md:py-1">Показать</button>
+      </form>
+      {err && <p className="text-red-600">{err}</p>}
+      {edits && edits.length === 0 && <p className="text-slate-500">Правок нет.</p>}
+      {edits && edits.length > 0 && (
+        <ul className="space-y-1">
+          {edits.map((x, i) => (
+            <li key={i}>
+              <span className="text-slate-400">{new Date(x.time).toLocaleString("ru-RU")}</span> · {x.actor} · реплика #{x.line} · <b>{editLabel[x.op] ?? x.op}</b>
+              {!visit.trim() && <button type="button" onClick={() => { setVisit(x.visit); void load(x.visit); }} className="ml-1 font-mono text-xs text-teal-700 underline">{x.visit.slice(0, 8)}…</button>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function AuditPanel() {
   const [result, setResult] = useState("");
   const [alerts, setAlerts] = useState<{ time: string; rule: string; key: string; count: number }[] | null>(null);
@@ -45,6 +81,7 @@ function AuditPanel() {
       <p className="text-slate-700">Эта роль не видит медицинских данных.</p>
       <button onClick={verify} className="rounded border px-3 py-1.5 text-sm">Проверить целостность журнала аудита</button>
       {result && <p className="text-sm">{result}</p>}
+      <EditsPanel />
       <section className="rounded bg-white p-4 text-sm shadow-sm">
         <h2 className="mb-2 font-medium">Тревоги о необычном доступе</h2>
         {alerts === null ? <p className="text-slate-500">Загрузка…</p> : alerts.length === 0 ? <p className="text-slate-500">Тревог нет.</p> : (

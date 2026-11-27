@@ -11,7 +11,8 @@ import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
 import { patients } from "./patients";
 import { docs, type Line, type Section } from "../src/data/script";
-import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, toSummary, type VisitStore } from "./visits";
+import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, toSummary, appendAsrLine, applyLineOps, replaceLines, type VisitStore } from "./visits";
+import type { LineChange } from "../src/domain/visit";
 
 export type { UserRecord };
 
@@ -141,7 +142,7 @@ export function createHandler(deps: Deps) {
       // CORS только для перечисленных приложений и без credentials: cookie с них не принимаются.
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Sample-Rate");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Sample-Rate, X-Speaker");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
       res.setHeader("Access-Control-Max-Age", "600");
       if (req.method === "OPTIONS") { res.writeHead(204); return void res.end(); }
@@ -150,7 +151,7 @@ export function createHandler(deps: Deps) {
 
     const isPost = req.method === "POST";
     if (isPost) {
-      const wantsAudio = url === "/api/asr";
+      const wantsAudio = url === "/api/asr" || /^\/api\/visits\/[0-9a-f]{32}\/asr$/.test(url);
       if (wantsAudio ? !(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/octet-stream") : !isJson(req.headers["content-type"]))
         return send(res, 415, { error: wantsAudio ? "Нужен Content-Type: application/octet-stream" : "Нужен Content-Type: application/json" });
       // Нестандартный заголовок нельзя отправить с чужого сайта без CORS-preflight (который мы не разрешаем).
@@ -417,27 +418,46 @@ export function createHandler(deps: Deps) {
       return send(res, 200, { alerts: list });
     }
 
-    if (isPost && url === "/api/asr") {
-      if (!can(actor, "asr.run")) return send(res, 403, { error: "Недостаточно прав" });
-      if (!deps.asr) return send(res, 503, { error: "Сервис распознавания речи не настроен (см. docs/ASR_DESIGN.md)" });
-      if (!asrLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов" });
-      if (req.headers["x-sample-rate"] !== String(SAMPLE_RATE)) return send(res, 400, { error: `Нужен PCM ${SAMPLE_RATE} Гц` });
+    /** Распознаёт сегмент речи из тела запроса. Звук существует только в памяти этого запроса: не пишется на диск и не попадает в журнал. */
+    const recognize = async (): Promise<{ status: number; body: { error: string } | { text: string; words?: { w: string; p: number }[]; dropped?: string } }> => {
+      if (!can(actor, "asr.run")) return { status: 403, body: { error: "Недостаточно прав" } };
+      if (!deps.asr) return { status: 503, body: { error: "Сервис распознавания речи не настроен (см. docs/ASR_DESIGN.md)" } };
+      if (!asrLimiter.allow(user.id)) return { status: 429, body: { error: "Слишком много запросов" } };
+      if (req.headers["x-sample-rate"] !== String(SAMPLE_RATE)) return { status: 400, body: { error: `Нужен PCM ${SAMPLE_RATE} Гц` } };
       let buf: Buffer;
-      try { buf = await readRaw(req, MAX_SECONDS * SAMPLE_RATE * 2 + 1024); } catch { return send(res, 413, { error: "Сегмент слишком длинный" }); }
+      try { buf = await readRaw(req, MAX_SECONDS * SAMPLE_RATE * 2 + 1024); } catch { return { status: 413, body: { error: "Сегмент слишком длинный" } }; }
       const seconds = buf.length / 2 / SAMPLE_RATE;
-      if (buf.length % 2 !== 0 || seconds < MIN_SECONDS || seconds > MAX_SECONDS) return send(res, 400, { error: "Неверная длина сегмента" });
+      if (buf.length % 2 !== 0 || seconds < MIN_SECONDS || seconds > MAX_SECONDS) return { status: 400, body: { error: "Неверная длина сегмента" } };
       const pcm = new Int16Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length));
-      // Аудио существует только в памяти этого запроса. Не пишется на диск и не попадает в журнал.
       log({ actor: user.id, action: "asr.segment", detail: { seconds: Math.round(seconds * 10) / 10 } });
-      if (rms(pcm) < SILENCE_RMS) return send(res, 200, { text: "", dropped: "silence" });
+      if (rms(pcm) < SILENCE_RMS) return { status: 200, body: { text: "", dropped: "silence" } };
       try {
         const { text, words } = await deps.asr.transcribe(pcm);
-        if (isHallucination(text)) return send(res, 200, { text: "", dropped: "hallucination" });
-        if (isNonSpeechAnnotation(text)) return send(res, 200, { text: "", dropped: "annotation" });
-        return send(res, 200, words ? { text, words } : { text });
+        if (isHallucination(text)) return { status: 200, body: { text: "", dropped: "hallucination" } };
+        if (isNonSpeechAnnotation(text)) return { status: 200, body: { text: "", dropped: "annotation" } };
+        return { status: 200, body: words ? { text, words } : { text } };
       } catch {
-        return send(res, 502, { error: "Сервис распознавания недоступен" }); // детали и текст не раскрываем и не пишем
+        return { status: 502, body: { error: "Сервис распознавания недоступен" } }; // детали и текст не раскрываем и не пишем
       }
+    };
+
+    if (isPost && url === "/api/asr") {
+      const r = await recognize();
+      return send(res, r.status, r.body);
+    }
+
+    // ---- аудитор: история правок расшифровки (кто, когда, какая реплика; без текста) ----
+    const editsUrl = /^\/api\/audit\/edits(?:\/([0-9a-f]{32}))?$/.exec(url);
+    if (req.method === "GET" && editsUrl) {
+      if (!can(actor, "audit.verify")) return send(res, 403, { error: "Недостаточно прав" });
+      const visitId = editsUrl[1];
+      log({ actor: user.id, action: "audit.edits", ...(visitId ? { target: visitId } : {}) });
+      const rows = deps.audit
+        .filter((r) => r.action.startsWith("visit.line.") && (!visitId || r.target === visitId))
+        .slice(visitId ? -2000 : -300)
+        .reverse()
+        .map((r) => ({ time: r.time, actor: r.actor, visit: r.target ?? "", line: Number(r.detail?.line ?? 0), op: r.action.slice("visit.line.".length) }));
+      return send(res, 200, { edits: rows });
     }
 
     // ---- пациенты: только те, кто закреплён за вошедшим врачом ----
@@ -450,7 +470,7 @@ export function createHandler(deps: Deps) {
 
     // ---- приёмы: расшифровка, черновик и решения врача хранит сервер ----
     const HISTORY_LIMIT = 100;
-    const visitUrl = /^\/api\/visits(?:\/([0-9a-f]{32}))?(?:\/(transcript|extract|decisions|sign))?$/.exec(url);
+    const visitUrl = /^\/api\/visits(?:\/([0-9a-f]{32}))?(?:\/(transcript|extract|decisions|sign|lines|asr))?$/.exec(url);
     if (visitUrl) {
       const [, visitId, action] = visitUrl;
 
@@ -498,6 +518,23 @@ export function createHandler(deps: Deps) {
           log({ actor: user.id, action: "visit.read", target: v.id });
           return send(res, 200, toView(v, patient));
         }
+        // В журнал аудита — номер реплики и вид правки, без текста. Сам текст «до» и «после» хранится в приёме (зашифрован).
+        const logLines = (changes: LineChange[]) => {
+          for (const c of changes) log({ actor: user.id, action: `visit.line.${c.op}`, target: v.id, detail: { line: c.lineId } });
+        };
+        if (isPost && action === "asr") {
+          if (v.status === "signed") return send(res, 409, { error: "Документ уже подписан и не меняется" });
+          if (v.source === "demo") return send(res, 409, { error: "Демо-разговор менять нельзя" });
+          const sp = req.headers["x-speaker"];
+          if (sp !== "doctor" && sp !== "patient") return send(res, 400, { error: "Нужен заголовок X-Speaker: doctor или patient" });
+          const r = await recognize();
+          if (r.status !== 200 || !("text" in r.body) || !r.body.text.trim()) return send(res, r.status, r.body);
+          const line = appendAsrLine(v, sp === "doctor" ? "Врач" : "Пациент", r.body.text, user.id, iso);
+          if (typeof line === "string") return send(res, 409, { error: line });
+          await visits.save(v);
+          logLines(v.lineLog.slice(-1));
+          return send(res, 200, { line, ...(r.body.words ? { words: r.body.words } : {}) });
+        }
         if (isPost && action) {
           if (v.status === "signed") return send(res, 409, { error: "Документ уже подписан и не меняется" });
           let body: Record<string, unknown> = {};
@@ -508,10 +545,21 @@ export function createHandler(deps: Deps) {
             if (v.source === "demo") return send(res, 409, { error: "Демо-разговор менять нельзя" });
             const lines = parseLines(body.lines);
             if (!lines) return send(res, 400, { error: "Неверные данные запроса" });
-            // Новая расшифровка делает прежний черновик и решения врача недействительными.
-            v.lines = lines; v.sections = null; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
-            await visits.save(v);
-            log({ actor: user.id, action: "visit.transcript", target: v.id, detail: { lines: lines.length } });
+            // Новая расшифровка делает прежний черновик и решения врача недействительными. Каждое отличие — в историю правок.
+            const changes = replaceLines(v, lines, user.id, iso);
+            if (typeof changes === "string") return send(res, 409, { error: changes });
+            if (changes.length) await visits.save(v);
+            log({ actor: user.id, action: "visit.transcript", target: v.id, detail: { lines: lines.length, changes: changes.length } });
+            logLines(changes);
+            return send(res, 200, toView(v, patient));
+          }
+
+          if (action === "lines") {
+            if (v.source === "demo") return send(res, 409, { error: "Демо-разговор менять нельзя" });
+            const changes = applyLineOps(v, body.ops, user.id, iso);
+            if (typeof changes === "string") return send(res, changes === "Нет такой реплики" ? 404 : 400, { error: changes });
+            if (changes.length) await visits.save(v);
+            logLines(changes);
             return send(res, 200, toView(v, patient));
           }
 
@@ -519,6 +567,10 @@ export function createHandler(deps: Deps) {
             if (!can(actor, "extract.run")) return send(res, 403, { error: "Недостаточно прав" });
             if (v.source === "demo") return send(res, 409, { error: "В демо-приёме черновик уже готов" });
             if (v.lines.length === 0) return send(res, 400, { error: "Нет текста для документа" });
+            if (body.docType !== undefined) { // вид документа можно выбрать в конце живого приёма
+              if (!isDocType(body.docType)) return send(res, 400, { error: "Неверные данные запроса" });
+              v.docType = body.docType;
+            }
             if (!extractLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов, подождите минуту" });
             log({ actor: user.id, action: "extract.request", target: v.id, detail: { lines: v.lines.length } });
             try {

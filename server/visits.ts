@@ -6,13 +6,14 @@ import { findConflicts } from "../src/data/allergy";
 import { docs, transcript as demoTranscript, type DocType, type Line, type Section } from "../src/data/script";
 import type { Patient, VisitSummary } from "../src/domain/patient";
 import { finalizeSections, keyOf, signBlockers, type Action, type Decisions } from "../src/domain/rules";
-import type { ChangeEntry, SignedInfo, VisitView } from "../src/domain/visit";
+import type { ChangeEntry, LineChange, LineOp, SignedInfo, VisitView } from "../src/domain/visit";
 
 export const MAX_LINES = 400;
 export const MAX_TEXT = 2000;
 export const MAX_CHANGES = 50;
 export const MAX_LOG = 1000;
 export const MAX_OPEN_PER_USER = 50;
+export const MAX_LINE_LOG = 5000;
 
 export interface Visit {
   id: string;
@@ -26,6 +27,8 @@ export interface Visit {
   decisions: Decisions;
   ackAllergy: number[];
   changeLog: ChangeEntry[];
+  /** Кто, когда и как менял реплики расшифровки. Хранится вместе с приёмом (зашифровано) и после подписи не меняется. */
+  lineLog: LineChange[];
   createdAt: string;
   updatedAt: string;
   signed?: SignedInfo;
@@ -89,6 +92,7 @@ export function createVisit(ownerId: string, patientId: string, docType: DocType
     decisions: {},
     ackAllergy: [],
     changeLog: [],
+    lineLog: [],
     createdAt: now,
     updatedAt: now,
     version: 0,
@@ -178,7 +182,7 @@ export function toView(v: Visit, patient: Patient): VisitView {
   return {
     id: v.id, patientId: v.patientId,
     patient: { id: patient.id, name: patient.name, birthDate: patient.birthDate, pin: patient.pin, allergies: patient.allergies }, docType: v.docType, source: v.source, status: v.status,
-    lines: v.lines, sections: v.sections, decisions: v.decisions, ackAllergy: v.ackAllergy, changeLog: v.changeLog,
+    lines: v.lines, sections: v.sections, decisions: v.decisions, ackAllergy: v.ackAllergy, changeLog: v.changeLog, lineLog: v.lineLog,
     ...(v.signed ? { signed: v.signed } : {}),
   };
 }
@@ -191,3 +195,96 @@ export function toSummary(v: Visit, patient: Patient): VisitSummary {
     ...(v.signed ? { signedAt: v.signed.signedAt } : {}),
   };
 }
+
+// ---- история правок расшифровки (шаг 3.6) ----
+
+/** Изменение расшифровки делает прежний черновик и решения врача недействительными: факты ссылались на старый текст. */
+function resetDraft(v: Visit) {
+  v.sections = null; v.decisions = {}; v.ackAllergy = [];
+}
+
+/** Разница между прежней и новой расшифровкой, по номерам реплик. */
+export function diffLines(before: Line[], after: Line[], actor: string, time: string): LineChange[] {
+  const old = new Map(before.map((l) => [l.id, l]));
+  const out: LineChange[] = [];
+  for (const l of after) {
+    const o = old.get(l.id);
+    if (!o) out.push({ time, actor, lineId: l.id, op: "add", after: l.text });
+    else {
+      if (o.speaker !== l.speaker) out.push({ time, actor, lineId: l.id, op: "speaker", before: o.speaker, after: l.speaker });
+      if (o.text !== l.text) out.push({ time, actor, lineId: l.id, op: "edit", before: o.text, after: l.text });
+    }
+  }
+  const next = new Set(after.map((l) => l.id));
+  for (const o of before) if (!next.has(o.id)) out.push({ time, actor, lineId: o.id, op: "delete", before: o.text });
+  return out.sort((a, b) => a.lineId - b.lineId);
+}
+
+/** Полная замена расшифровки (прежний путь). Каждое отличие попадает в историю. */
+export function replaceLines(v: Visit, lines: Line[], actor: string, time: string): LineChange[] | string {
+  const changes = diffLines(v.lines, lines, actor, time);
+  if (v.lineLog.length + changes.length > MAX_LINE_LOG) return "Слишком много правок расшифровки";
+  if (changes.length === 0) return changes;
+  v.lines = lines; v.lineLog = [...v.lineLog, ...changes]; v.updatedAt = time;
+  resetDraft(v);
+  return changes;
+}
+
+/** Реплика, распознанная сервером из звука. Её исходный текст сохраняется, чтобы потом было видно, что поправил врач. */
+export function appendAsrLine(v: Visit, speaker: Line["speaker"], text: string, actor: string, time: string): Line | string {
+  if (v.lines.length >= MAX_LINES) return "Слишком длинная расшифровка";
+  if (v.lineLog.length >= MAX_LINE_LOG) return "Слишком много правок расшифровки";
+  const line: Line = { id: v.lines.reduce((m, l) => Math.max(m, l.id), 0) + 1, speaker, text: text.trim().slice(0, MAX_TEXT) };
+  v.lines = [...v.lines, line];
+  v.lineLog = [...v.lineLog, { time, actor, lineId: line.id, op: "asr", after: line.text }];
+  v.updatedAt = time;
+  resetDraft(v);
+  return line;
+}
+
+const isSpeaker = (x: unknown): x is Line["speaker"] => x === "Врач" || x === "Пациент";
+const okText = (x: unknown): x is string => typeof x === "string" && x.trim() !== "" && x.length <= MAX_TEXT;
+
+/**
+ * Точечные правки врача: edit (текст), speaker (кто говорит), delete, add (новая реплика вручную).
+ * Всё или ничего: при любой ошибке приём не меняется. Возвращает список изменений или текст ошибки.
+ */
+export function applyLineOps(v: Visit, ops: unknown, actor: string, time: string): LineChange[] | string {
+  if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_CHANGES) return "Неверные данные запроса";
+  const lines = v.lines.map((l) => ({ ...l }));
+  const changes: LineChange[] = [];
+  let nextId = lines.reduce((m, l) => Math.max(m, l.id), 0) + 1;
+  for (const raw of ops) {
+    if (!raw || typeof raw !== "object") return "Неверные данные запроса";
+    const o = raw as { op?: unknown; id?: unknown; text?: unknown; speaker?: unknown };
+    const op = o.op as LineOp;
+    if (op === "add") {
+      if (!okText(o.text) || !isSpeaker(o.speaker)) return "Неверные данные запроса";
+      if (lines.length >= MAX_LINES) return "Слишком длинная расшифровка";
+      const l = { id: nextId++, speaker: o.speaker, text: o.text.trim() };
+      lines.push(l);
+      changes.push({ time, actor, lineId: l.id, op: "add", after: l.text });
+      continue;
+    }
+    const i = lines.findIndex((l) => l.id === o.id);
+    if (i < 0) return "Нет такой реплики";
+    const cur = lines[i];
+    if (op === "edit") {
+      if (!okText(o.text)) return "Неверные данные запроса";
+      const text = o.text.trim();
+      if (text !== cur.text) { changes.push({ time, actor, lineId: cur.id, op: "edit", before: cur.text, after: text }); cur.text = text; }
+    } else if (op === "speaker") {
+      if (!isSpeaker(o.speaker)) return "Неверные данные запроса";
+      if (o.speaker !== cur.speaker) { changes.push({ time, actor, lineId: cur.id, op: "speaker", before: cur.speaker, after: o.speaker }); cur.speaker = o.speaker; }
+    } else if (op === "delete") {
+      changes.push({ time, actor, lineId: cur.id, op: "delete", before: cur.text });
+      lines.splice(i, 1);
+    } else return "Неверные данные запроса";
+  }
+  if (v.lineLog.length + changes.length > MAX_LINE_LOG) return "Слишком много правок расшифровки";
+  if (changes.length === 0) return changes;
+  v.lines = lines; v.lineLog = [...v.lineLog, ...changes]; v.updatedAt = time;
+  resetDraft(v);
+  return changes;
+}
+

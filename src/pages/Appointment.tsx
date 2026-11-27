@@ -11,6 +11,7 @@ import type { PatientView } from "../domain/patient";
 const plural = (n: number) =>
   n % 10 === 1 && n % 100 !== 11 ? "факт" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "факта" : "фактов";
 const actionLabel: Record<Action, string> = { kept: "Оставлено", removed: "Убрано", edited: "Исправлено" };
+const lineOpLabel = { asr: "Распознано", add: "Добавлено вручную", edit: "Исправлено", delete: "Удалено", speaker: "Сменён говорящий" } as const;
 
 export default function Appointment({ resumeId, onResumed }: { resumeId: string | null; onResumed: () => void }) {
   const [live, setLive] = useState(false);
@@ -196,6 +197,20 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
             </li>
           ))}
         </ul>
+      )}
+      {visit.lineLog.some((c) => c.op !== "asr") && (
+        <>
+          <h2 className="mb-2 mt-4 font-medium">Правки расшифровки</h2>
+          <ul className="space-y-1">
+            {visit.lineLog.filter((c) => c.op !== "asr").map((c, i) => (
+              <li key={i}>
+                <span className="text-slate-400">{new Date(c.time).toLocaleTimeString("ru-RU")}</span> · реплика #{c.lineId} · <b>{lineOpLabel[c.op]}</b>
+                {c.before !== undefined && <>: «{c.before}»</>}
+                {c.after !== undefined && <> → «{c.after}»</>}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );

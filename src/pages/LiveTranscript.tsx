@@ -10,7 +10,8 @@ import { applySuggestion, suggestDrug } from "../audio/suggest";
 const UNCERTAIN_BELOW = 0.7; // на 11 записях: при 0.5 ловится 49 % ошибок (7 % ложных тревог), при 0.7 — 76 % (20 %)
 
 interface Row {
-  id: number;
+  id: number; // номер реплики на сервере; у ещё не распознанной — временный отрицательный
+  saved: string; // текст, который сейчас хранит сервер (для сравнения при правке)
   speaker: "Врач" | "Пациент";
   text: string;
   words?: { w: string; p: number }[]; // уверенность модели по словам; пропадает, если врач правил текст
@@ -38,27 +39,60 @@ export default function LiveTranscript({
   speakerRef.current = speaker;
   const capture = useRef<Capture | null>(null);
   const segmenter = useRef<Segmenter | null>(null);
-  const nextId = useRef(1);
+  const tempId = useRef(-1);
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const visitId = useRef<string | null>(null);
 
-  // Сегменты распознаются строго по очереди, чтобы реплики не менялись местами.
+  const failMsg = (e: unknown) => (e instanceof ApiError ? (e.status === 401 ? "Сессия истекла. Войдите заново." : e.message) : "Не удалось связаться с сервером");
+  // Все обращения к серверу идут строго по очереди: реплики не меняются местами, правки не обгоняют распознавание.
+  const run = (fn: () => Promise<void>) => { queue.current = queue.current.then(fn).catch((e) => setError(failMsg(e))); };
+
+  // Расшифровку хранит сервер с самого начала: распознанный текст и каждая правка врача попадают в историю правок приёма.
+  const ensureVisit = async () => {
+    if (!visitId.current) visitId.current = (await api<VisitView>("POST", "/api/visits", { patientId, docType: type })).id;
+    return visitId.current;
+  };
+
   const enqueue = (seg: Float32Array) => {
-    const id = nextId.current++;
-    setRows((r) => [...r, { id, speaker: speakerRef.current, text: "", pending: true }]);
+    const tmp = tempId.current--;
+    const sp = speakerRef.current;
+    setRows((r) => [...r, { id: tmp, saved: "", speaker: sp, text: "", pending: true }]);
     const pcm = toInt16(seg);
-    queue.current = queue.current.then(async () => {
+    run(async () => {
       try {
-        const res = await apiAudio("/api/asr", pcm);
-        if (res.text.trim()) setRows((r) => r.map((x) => (x.id === id ? { ...x, text: res.text.trim(), words: res.words, pending: false } : x)));
+        const id = await ensureVisit();
+        const res = await apiAudio<{ line?: { id: number; speaker: Row["speaker"]; text: string }; words?: { w: string; p: number }[]; dropped?: string }>(`/api/visits/${id}/asr`, pcm, { "X-Speaker": sp === "Врач" ? "doctor" : "patient" });
+        const line = res.line;
+        if (line) setRows((r) => r.map((x) => (x.id === tmp ? { id: line.id, saved: line.text, speaker: line.speaker, text: line.text, words: res.words, pending: false } : x)));
         else {
-          setRows((r) => r.filter((x) => x.id !== id));
+          setRows((r) => r.filter((x) => x.id !== tmp));
           setDropped((n) => n + 1);
         }
       } catch (e) {
-        setRows((r) => r.filter((x) => x.id !== id));
-        setError(e instanceof ApiError ? (e.status === 401 ? "Сессия истекла. Войдите заново." : e.message) : "Не удалось связаться с сервером");
+        setRows((r) => r.filter((x) => x.id !== tmp));
+        throw e;
       }
     });
+  };
+
+  /** Правка врача уходит на сервер, когда он закончил редактировать строку. */
+  const sendOps = (ops: object[], onSaved?: () => void) =>
+    run(async () => {
+      if (!visitId.current) return;
+      await api<VisitView>("POST", `/api/visits/${visitId.current}/lines`, { ops });
+      onSaved?.();
+    });
+  const commitEdit = (id: number) => {
+    setEditing(null);
+    const r = rows.find((x) => x.id === id);
+    if (!r || r.pending || r.text.trim() === r.saved) return;
+    if (!r.text.trim()) { remove(id); return; }
+    const text = r.text.trim();
+    sendOps([{ op: "edit", id, text }], () => setRows((all) => all.map((x) => (x.id === id ? { ...x, saved: text } : x))));
+  };
+  const remove = (id: number) => {
+    setRows((all) => all.filter((x) => x.id !== id));
+    sendOps([{ op: "delete", id }]);
   };
 
   const stop = () => {
@@ -101,13 +135,11 @@ export default function LiveTranscript({
     setBusy(true);
     setError("");
     try {
-      await queue.current; // дожидаемся последних сегментов
-      const lines = rows.filter((r) => r.text.trim()).map((r) => ({ id: r.id, speaker: r.speaker, text: r.text.trim() }));
-      if (lines.length === 0) throw new Error("Нет текста для документа");
-      // Расшифровку и черновик хранит сервер: сначала создаём приём, потом загружаем текст, потом просим составить документ.
-      const created = await api<VisitView>("POST", "/api/visits", { patientId, docType: type });
-      await api<VisitView>("POST", `/api/visits/${created.id}/transcript`, { lines });
-      const visit = await api<VisitView>("POST", `/api/visits/${created.id}/extract`, {});
+      if (editing !== null) commitEdit(editing);
+      await queue.current; // дожидаемся последних сегментов и правок
+      if (!visitId.current || !rows.some((r) => !r.pending && r.text.trim())) throw new Error("Нет текста для документа");
+      // Текст уже на сервере; просим составить документ по тому, что хранит сервер.
+      const visit = await api<VisitView>("POST", `/api/visits/${visitId.current}/extract`, { docType: type });
       if (!visit.sections) throw new Error("Не удалось составить документ");
       if (visit.sections.length === 0) throw new Error("В разговоре не нашлось фактов для этого документа");
       onDraft(visit);
@@ -154,7 +186,7 @@ export default function LiveTranscript({
             <ol className="space-y-1.5 text-sm">
               {rows.map((r) => (
                 <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 sm:flex-nowrap">
-                  <span className="w-8 shrink-0 text-xs text-slate-400">#{r.id}</span>
+                  <span className="w-8 shrink-0 text-xs text-slate-400">{r.id > 0 ? `#${r.id}` : ""}</span>
                   <b className={`w-20 shrink-0 ${r.speaker === "Врач" ? "text-teal-700" : "text-slate-700"}`}>{r.speaker}:</b>
                   {r.pending ? (
                     <span className="text-slate-400">…</span>
@@ -165,7 +197,7 @@ export default function LiveTranscript({
                           autoFocus={editing === r.id}
                           value={r.text}
                           onChange={(e) => setRows((all) => all.map((x) => (x.id === r.id ? { ...x, text: e.target.value, words: undefined } : x)))}
-                          onBlur={() => setEditing(null)}
+                          onBlur={() => commitEdit(r.id)}
                           className="w-full rounded border border-transparent px-1 hover:border-slate-300 focus:border-teal-500"
                           aria-label={`Реплика ${r.id}`}
                         />
@@ -187,7 +219,11 @@ export default function LiveTranscript({
                           Возможно, «{x.drug}», а не «{x.word.replace(/[^\p{L}]/gu, "")}»?{" "}
                           <button
                             className="rounded border border-amber-400 bg-amber-50 px-1.5"
-                            onClick={() => setRows((all) => all.map((y) => (y.id === r.id ? { ...y, text: applySuggestion(y.text, x.word, x.drug!), words: undefined } : y)))}
+                            onClick={() => {
+                              const text = applySuggestion(r.text, x.word, x.drug!);
+                              setRows((all) => all.map((y) => (y.id === r.id ? { ...y, text, words: undefined } : y)));
+                              sendOps([{ op: "edit", id: r.id, text }], () => setRows((all) => all.map((y) => (y.id === r.id ? { ...y, saved: text } : y))));
+                            }}
                           >
                             Заменить
                           </button>
@@ -196,7 +232,7 @@ export default function LiveTranscript({
                     </div>
                   )}
                   {!r.pending && (
-                    <button onClick={() => setRows((all) => all.filter((x) => x.id !== r.id))} className="ml-auto px-2 text-slate-400 hover:text-red-600 sm:ml-0" aria-label={`Удалить реплику ${r.id}`}>✕</button>
+                    <button onClick={() => remove(r.id)} className="ml-auto px-2 text-slate-400 hover:text-red-600 sm:ml-0" aria-label={`Удалить реплику ${r.id}`}>✕</button>
                   )}
                 </li>
               ))}

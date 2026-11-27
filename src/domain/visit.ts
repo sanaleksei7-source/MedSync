@@ -11,6 +11,17 @@ export interface ChangeEntry {
   after?: string;
 }
 
+/** Одно изменение расшифровки: кто, когда, какая реплика и что было до и после (шаг 3.6). */
+export type LineOp = "asr" | "add" | "edit" | "delete" | "speaker";
+export interface LineChange {
+  time: string; // ISO
+  actor: string; // id пользователя
+  lineId: number;
+  op: LineOp; // asr — реплика пришла из распознавания речи; add — набрана вручную
+  before?: string;
+  after?: string;
+}
+
 export interface SignedInfo {
   hash: string;
   signature: string;
@@ -33,5 +44,7 @@ export interface VisitView {
   decisions: Decisions;
   ackAllergy: number[];
   changeLog: ChangeEntry[];
+  /** История правок расшифровки (видит только врач-владелец; аудитор видит то же без текста в журнале аудита). */
+  lineLog: LineChange[];
   signed?: SignedInfo;
 }
