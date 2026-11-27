@@ -26,7 +26,7 @@ Run `npm test` (all tests), `npm run seed` (creates fictional users in the gitig
 3. **History in the browser — closed in step 3.3.** History is read from the server (`GET /api/visits`), owner-only, without text.
 4. **Storage is JSON files** (`data/users.json`, `data/audit.log`). Real design: a database with encryption at rest, backups, restore tests and per-clinic isolation. Audit log: moved to an append-only database table in step 3.4. Still to do: ship the log or its anchors to external write-once storage (hosting choice), because whoever controls the database can still replace it wholesale together with its chain.
 5. **Sessions live in memory** and are lost on restart; no multi-instance support.
-6. **No password change, reset, user management or MFA enrolment flow.** Users and secrets are created by a script.
+6. **Account flows — built in step 3.5.** Password change, second-factor re-enrolment, admin user management and break-glass access exist and are tested; still missing: reset by e-mail or SMS, a QR code for the secret, a leaked-password check, and the independent review.
 7. **Break-glass access** (emergency access to a patient not assigned to the doctor, with alerting) is not built.
 8. **Transport security** (TLS, HSTS, secure cookie flag) depends on the hosting; the code sets `Secure` only when `NODE_ENV=production`.
 9. **Audit log retention and who may read it** are undefined (⚖). Retention is now a setting (`AUDIT_RETENTION_YEARS`, provisional 5) with a report; only the auditor role reads the log and alerts.

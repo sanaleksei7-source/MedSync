@@ -39,4 +39,6 @@ export interface Me {
   id: string;
   name: string;
   role: "doctor" | "admin" | "auditor";
+  /** Что нужно сделать до начала работы: сменить одноразовый пароль, затем заново подключить второй фактор. */
+  setup?: "password" | "totp" | null;
 }

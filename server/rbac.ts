@@ -13,7 +13,12 @@ export interface Actor {
   id: string;
   role: Role;
   assignedPatients: string[];
+  /** Пациенты, к которым врач получил временный экстренный доступ (break-glass). */
+  emergencyPatients?: string[];
 }
+
+/** Экстренный доступ позволяет читать и вести приём, но не подписывать документы. */
+const EMERGENCY_PERMISSIONS: Permission[] = ["patient.read", "visit.edit"];
 
 export const can = (a: Actor, p: Permission) => grants[a.role].includes(p);
 
@@ -21,5 +26,6 @@ export const can = (a: Actor, p: Permission) => grants[a.role].includes(p);
 export function canAccessPatient(a: Actor, p: Permission, patientId: string): boolean {
   if (!can(a, p)) return false;
   if (p === "audit.verify" || p === "user.manage") return true;
-  return a.assignedPatients.includes(patientId);
+  if (a.assignedPatients.includes(patientId)) return true;
+  return EMERGENCY_PERMISSIONS.includes(p) && (a.emergencyPatients?.includes(patientId) ?? false);
 }

@@ -3,6 +3,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { patients } from "../patients";
 import { anchorOf, appendRecord, checkAnchor, retentionReport, verifyChain, type AuditRecord } from "../audit";
+import { importUsers, loadUsers, saveUser } from "./user-store";
+import type { UserRecord } from "../accounts";
 import { AuditWriter, appendAuditRow, importAudit, loadAudit } from "./audit-store";
 import { VersionConflictError, createVisit, type Visit } from "../visits";
 import { exportBackup, parseBackup, restoreBackup, serializeBackup, verifyDatabase, type BackupFile } from "./backup";
@@ -176,6 +178,50 @@ const caught = await verifyDatabase(target, ring, patients);
 check("the check catches a signed document whose text no longer matches its hash", caught.problems.length === 1 && caught.problems[0].includes("не соответствует подписанному хэшу"));
 
 
+
+// Каждая база PGlite занимает больше 100 МБ памяти, поэтому проверкам, которым нужна «чистая» база, отдаётся одна общая: схема пересоздаётся.
+let scratchDb: Db | null = null;
+async function freshDb(): Promise<Db> {
+  if (!scratchDb) scratchDb = await openPglite();
+  else await scratchDb.exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await migrate(scratchDb);
+  return scratchDb;
+}
+
+// --- учётные записи в базе (шаг 3.5) ---
+const udb = await openPglite();
+await migrate(udb);
+const mkUser = (id: string, extra: Partial<UserRecord> = {}): UserRecord => ({ id, username: id, name: `Имя ${id}`, role: "doctor", passwordHash: "scrypt$aa$bb", totpSecret: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", assignedPatients: ["p1", "p2"], ...extra });
+const u1 = mkUser("doc1"), u2 = mkUser("doc2", { totpSecret: "ZYXWVUTSRQPONMLKJIHGFEDCBA765432", setup: "password", pendingTotp: "PENDINGPENDINGPENDINGPENDING2345", disabled: true, passwordChangedAt: "2026-11-27T10:00:00.000Z" });
+await saveUser(udb, ring, u1); await saveUser(udb, ring, u2);
+const lu = await loadUsers(udb, ring);
+check("users round-trip through the encrypted store", isDeepStrictEqual(lu, [u1, u2]));
+check("second-factor secrets are not readable in the table, password hashes stay hashes", await (async () => {
+  const raw = (await udb.query<{ secrets: Uint8Array; password_hash: string }>("SELECT secrets, password_hash FROM users")).rows;
+  const all = raw.map((r) => Buffer.from(r.secrets).toString("latin1") + Buffer.from(r.secrets).toString("base64")).join("");
+  return raw.length === 2 && !all.includes("ABCDEFGHIJ") && !all.includes("PENDING") && raw.every((r) => r.password_hash.startsWith("scrypt$"));
+})());
+check("saving again updates the record (setup finished, secret replaced, pending cleared)", await (async () => {
+  const next = { ...u2, totpSecret: "NEWNEWNEWNEWNEWNEWNEWNEWNEWNEW22", setup: undefined, pendingTotp: undefined, disabled: false } as UserRecord;
+  delete next.setup; delete next.pendingTotp; delete next.disabled;
+  await saveUser(udb, ring, next);
+  const r = (await loadUsers(udb, ring)).find((x) => x.id === "doc2")!;
+  return r.totpSecret === next.totpSecret && r.setup === undefined && r.pendingTotp === undefined && r.disabled === undefined && (await loadUsers(udb, ring)).length === 2;
+})());
+check("user names are unique and stored in lower case", await throws(() => saveUser(udb, ring, mkUser("other", { username: "doc1" }))) && (await (async () => { await saveUser(udb, ring, mkUser("up1", { username: "MixedCase" })); return (await loadUsers(udb, ring)).some((u) => u.username === "mixedcase"); })()));
+check("a secret moved to another user's row does not decrypt", await (async () => {
+  await udb.query("UPDATE users SET secrets = (SELECT secrets FROM users WHERE id='doc1'), key_id = (SELECT key_id FROM users WHERE id='doc1') WHERE id='up1'");
+  return throws(() => loadUsers(udb, ring));
+})());
+check("bad role, bad setup value and bad id are refused by the table", await throws(() => udb.query("UPDATE users SET role='root' WHERE id='doc1'")) && await throws(() => udb.query("UPDATE users SET setup='x' WHERE id='doc1'")) && await throws(() => saveUser(udb, ring, mkUser("bad id!"))));
+check("import fills an empty table once", await (async () => {
+  const d = await freshDb();
+  const n = await importUsers(d, ring, [u1, u2]); const again = await throws(() => importUsers(d, ring, [u1]));
+  const same = isDeepStrictEqual(await loadUsers(d, ring), [u1, u2]);
+  return n === 2 && again && same;
+})());
+await udb.close();
+
 // --- журнал аудита в базе (шаг 3.4) ---
 const adb = await openPglite();
 await migrate(adb);
@@ -204,8 +250,8 @@ w2.write({ ...out, seq: out.seq + 3 }).catch(() => {}); // дыра в нуме�
 await w2.flush();
 check("a failed write marks the writer as failed and later writes are skipped", w2.failed !== null && (await loadAudit(adb)).length === more.length);
 
-check("importing a broken file chain is refused", await (async () => { const d = await openPglite(); await migrate(d); const bad = chain.map((r) => ({ ...r })); bad[1].actor = "evil"; const r = await throws(() => importAudit(d, bad)); await d.close(); return r; })());
-check("importing a good file chain fills an empty table, and not a second time", await (async () => { const d = await openPglite(); await migrate(d); const n = await importAudit(d, chain); const again = await throws(() => importAudit(d, chain)); const same = isDeepStrictEqual(await loadAudit(d), chain); await d.close(); return n === chain.length && again && same; })());
+check("importing a broken file chain is refused", await (async () => { const d = await freshDb(); const bad = chain.map((r) => ({ ...r })); bad[1].actor = "evil"; const r = await throws(() => importAudit(d, bad)); return r; })());
+check("importing a good file chain fills an empty table, and not a second time", await (async () => { const d = await freshDb(); const n = await importAudit(d, chain); const again = await throws(() => importAudit(d, chain)); const same = isDeepStrictEqual(await loadAudit(d), chain); return n === chain.length && again && same; })());
 
 const anchor = anchorOf(chain)!;
 check("an anchor matches the log it was taken from, and a longer log", checkAnchor(chain, anchor).ok && checkAnchor(more, anchor).ok);
@@ -223,11 +269,10 @@ check("retention report counts records older than the period and never deletes",
 // копия содержит журнал и восстанавливает его; проверка видит нарушенный журнал
 check("backup carries the audit log and restore brings it back", await (async () => {
   const b = await exportBackup(adb);
-  const d = await openPglite();
+  const d = await freshDb();
   await restoreBackup(d, parseBackup(serializeBackup(b)));
   const same = isDeepStrictEqual(await loadAudit(d), more);
   const v = await verifyDatabase(d, ring, patients);
-  await d.close();
   return same && v.problems.length === 0;
 })());
 check("restore refuses a backup whose audit chain was altered", await (async () => {
@@ -237,9 +282,8 @@ check("restore refuses a backup whose audit chain was altered", await (async () 
   const { sha256: _drop, ...body } = bad;
   const { createHash } = await import("node:crypto");
   bad.sha256 = createHash("sha256").update(JSON.stringify(body)).digest("hex"); // контрольная сумма пересчитана, цепочка нет
-  const d = await openPglite();
+  const d = await freshDb();
   const r = await throws(() => restoreBackup(d, parseBackup(JSON.stringify(bad))));
-  await d.close();
   return r;
 })());
 check("backups made before step 3.4 (no audit field) still restore", await (async () => {
@@ -248,14 +292,13 @@ check("backups made before step 3.4 (no audit field) still restore", await (asyn
   delete old.audit; delete old.sha256;
   const { createHash } = await import("node:crypto");
   old.sha256 = createHash("sha256").update(JSON.stringify(old)).digest("hex");
-  const d = await openPglite();
+  const d = await freshDb();
   const r = await restoreBackup(d, parseBackup(JSON.stringify(old)));
-  await d.close();
   return r.visits === b.visits.length;
 })());
 await adb.close();
 
-for (const d of [fresh, db, src, target, partial] as Db[]) await d.close();
+for (const d of [fresh, db, src, target, partial, scratchDb] as (Db | null)[]) await d?.close();
 
 let bad = 0;
 for (const [n, ok] of t) if (!ok) { bad++; console.error("FAIL", n); }

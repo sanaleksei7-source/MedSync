@@ -113,6 +113,11 @@ export class SessionStore {
   destroy(token: string | undefined) {
     if (token) this.sessions.delete(SessionStore.h(token)); // выход завершает только эту сессию
   }
+  /** Завершает все сессии пользователя, кроме одной (смена пароля, блокировка, сброс). */
+  destroyUser(userId: string, exceptToken?: string) {
+    const keep = exceptToken ? SessionStore.h(exceptToken) : undefined;
+    for (const [k, s] of [...this.sessions]) if (s.userId === userId && k !== keep) this.sessions.delete(k);
+  }
 }
 
 // ---- Токены для мобильных приложений ----

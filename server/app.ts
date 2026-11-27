@@ -1,24 +1,19 @@
 import http from "node:http";
+import { randomBytes } from "node:crypto";
 import { RateLimiter, hostAllowed, isJson, originAllowed } from "./guards";
-import { LoginThrottle, SessionStore, TokenStore, verifyPassword, verifyTotp } from "./auth";
+import { LoginThrottle, SessionStore, TokenStore, hashPassword, newTotpSecret, verifyPassword, verifyTotp } from "./auth";
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
 import { AlertMonitor, isAlert, type Alert } from "./alerts";
-import { canAccessPatient, can, type Actor, type Role } from "./rbac";
+import { canAccessPatient, can, type Actor } from "./rbac";
+import { BreakGlass, GRANT_MS, REASONS, isReason } from "./breakglass";
+import { ROLES, USERNAME, otpauthUri, passwordProblem, publicUser, tempPassword, type UserRecord } from "./accounts";
 import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
 import { patients } from "./patients";
 import { docs, type Line, type Section } from "../src/data/script";
 import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, toSummary, type VisitStore } from "./visits";
 
-export interface UserRecord {
-  id: string;
-  username: string;
-  name: string;
-  role: Role;
-  passwordHash: string;
-  totpSecret: string;
-  assignedPatients: string[];
-}
+export type { UserRecord };
 
 export interface Deps {
   users: UserRecord[];
@@ -34,6 +29,9 @@ export interface Deps {
   /** Куда ещё сообщить о тревоге (почта, мессенджер); сама тревога в любом случае попадает в журнал. */
   onAlert?: (a: Alert) => void;
   alerts?: AlertMonitor;
+  /** Сохраняет изменённую учётную запись (в базу). Без него изменения живут только в памяти. */
+  persistUser?: (u: UserRecord) => void | Promise<void>;
+  breakGlass?: BreakGlass;
   ipLimitPerMinute?: number;
   loginLimitPerMinute?: number; // по умолчанию 20 с одного адреса
 
@@ -108,6 +106,9 @@ export function createHandler(deps: Deps) {
   let auditQueue: Promise<void> = Promise.resolve();
   let auditFailed = false;
   const monitor = deps.alerts ?? new AlertMonitor();
+  const bg = deps.breakGlass ?? new BreakGlass();
+  const breakGlassLimiter = new RateLimiter(5, 60_000); // подбор ПИН через экстренный доступ
+  const accountLimiter = new RateLimiter(30, 60_000);
   const append = (e: AuditEvent) => {
     const rec = appendRecord(deps.audit, e);
     auditQueue = auditQueue.then(() => (auditFailed ? undefined : deps.persistAudit(rec))).catch((err) => {
@@ -175,7 +176,8 @@ export function createHandler(deps: Deps) {
       const user = deps.users.find((u) => u.username.toLowerCase() === key);
       const passOk = await verifyPassword(password, user ? user.passwordHash : deps.dummyHash);
       const codeOk = user ? verifyTotp(user.totpSecret, code, now()) : false;
-      if (!user || !passOk || !codeOk) {
+      if (user?.disabled && passOk && codeOk) log({ actor: user.id, action: "login.disabled" }); // учётная запись заблокирована: ответ тот же, что при неверных данных
+      if (!user || user.disabled || !passOk || !codeOk) {
         deps.throttle.fail(key, now());
         log({ actor: "anonymous", action: "login.fail", detail: { user: key } });
         return send(res, 401, { error: "Неверное имя, пароль или код" });
@@ -184,12 +186,12 @@ export function createHandler(deps: Deps) {
       if (wantsToken) {
         const pair = deps.tokens!.issue(user.id, now());
         log({ actor: user.id, action: "login.ok", detail: { client: "app" } });
-        return send(res, 200, { id: user.id, name: user.name, role: user.role, ...pair });
+        return send(res, 200, { id: user.id, name: user.name, role: user.role, setup: user.setup ?? null, ...pair });
       }
       const token = deps.sessions.create(user.id, now());
       log({ actor: user.id, action: "login.ok" });
       const cookie = `${COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${deps.secureCookie ? "; Secure" : ""}`;
-      return send(res, 200, { id: user.id, name: user.name, role: user.role }, { "Set-Cookie": cookie });
+      return send(res, 200, { id: user.id, name: user.name, role: user.role, setup: user.setup ?? null }, { "Set-Cookie": cookie });
     }
 
     // ---- обновление токена приложения ----
@@ -205,9 +207,9 @@ export function createHandler(deps: Deps) {
         return send(res, 401, { error: "Требуется вход" }); // старый токен предъявлен повторно: все токены этого входа отозваны
       }
       const u = deps.users.find((x) => x.id === r.userId);
-      if (!u) return send(res, 401, { error: "Требуется вход" });
+      if (!u || u.disabled) return send(res, 401, { error: "Требуется вход" });
       log({ actor: u.id, action: "token.refresh", detail: { client: "app" } });
-      return send(res, 200, { id: u.id, name: u.name, role: u.role, ...r.pair });
+      return send(res, 200, { id: u.id, name: u.name, role: u.role, setup: u.setup ?? null, ...r.pair });
     }
 
     // ---- всё остальное требует сессии ----
@@ -229,8 +231,12 @@ export function createHandler(deps: Deps) {
       userId = deps.sessions.get(token, now())?.userId;
     }
     const user = userId ? deps.users.find((u) => u.id === userId) : undefined;
-    if (!user) return send(res, 401, { error: "Требуется вход" });
-    const actor: Actor = { id: user.id, role: user.role, assignedPatients: user.assignedPatients };
+    if (!user || user.disabled) return send(res, 401, { error: "Требуется вход" });
+    const actor: Actor = { id: user.id, role: user.role, assignedPatients: user.assignedPatients, emergencyPatients: bg.active(user.id, now()) };
+
+    // Пока пользователь не завершил настройку (одноразовый пароль, новый секрет второго фактора), доступны только учётная запись, выход и сведения о себе.
+    if (user.setup && !(url === "/api/me" || url === "/api/logout" || url.startsWith("/api/account/")))
+      return send(res, 403, { error: "Сначала завершите настройку учётной записи", setup: user.setup });
 
     if (isPost && url === "/api/logout") {
       if (tokenFamily) deps.tokens!.revoke(tokenFamily);
@@ -239,7 +245,165 @@ export function createHandler(deps: Deps) {
       return send(res, 200, { ok: true }, { "Set-Cookie": `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }
 
-    if (req.method === "GET" && url === "/api/me") return send(res, 200, { id: user.id, name: user.name, role: user.role });
+    if (req.method === "GET" && url === "/api/me") return send(res, 200, { id: user.id, name: user.name, role: user.role, setup: user.setup ?? null });
+
+    // ---- учётная запись: смена пароля, второй фактор, экстренный доступ, управление пользователями ----
+    const readBody = async (): Promise<Record<string, unknown> | null> => {
+      try { const b = await readJson(req); return b && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : null; } catch { return null; }
+    };
+    const commitUser = async (next: UserRecord) => {
+      await deps.persistUser?.(next); // сначала в базу: если запись не удалась, в памяти ничего не меняется
+      const i = deps.users.findIndex((x) => x.id === next.id);
+      if (i < 0) deps.users.push(next); else deps.users[i] = next;
+    };
+    const endAllLogins = (id: string, exceptCookie?: string) => {
+      deps.sessions.destroyUser(id, exceptCookie);
+      deps.tokens?.revokeUser(id);
+    };
+    /** Проверка действующего пароля с общим счётчиком неудач: смена пароля не должна быть лазейкой для подбора. */
+    const confirmPassword = async (password: unknown, code?: unknown): Promise<boolean> => {
+      const key = `acct:${user.id}`;
+      if (deps.throttle.locked(key, now())) return false;
+      const ok = typeof password === "string" && password.length <= 256 && (await verifyPassword(password, user.passwordHash)) && (code === undefined || (typeof code === "string" && verifyTotp(user.totpSecret, code, now())));
+      if (!ok) { deps.throttle.fail(key, now()); log({ actor: user.id, action: "account.verify.fail" }); }
+      else deps.throttle.reset(key);
+      return ok;
+    };
+
+    if (isPost && url.startsWith("/api/account/")) {
+      if (!accountLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов" });
+      if (deps.throttle.locked(`acct:${user.id}`, now())) return send(res, 429, { error: "Слишком много неудачных попыток. Подождите 15 минут." });
+      const body = await readBody();
+      if (!body) return send(res, 400, { error: "Неверный запрос" });
+
+      if (url === "/api/account/password") {
+        if (user.setup === "totp") return send(res, 409, { error: "Пароль уже сменён: подключите второй фактор" });
+        if (typeof body.next !== "string" || typeof body.current !== "string") return send(res, 400, { error: "Неверный запрос" });
+        if (!(await confirmPassword(body.current, body.code))) return send(res, 401, { error: "Неверный текущий пароль или код" });
+        const problem = passwordProblem(body.next, body.current, user.username);
+        if (problem) return send(res, 400, { error: problem });
+        await commitUser({ ...user, passwordHash: await hashPassword(body.next), passwordChangedAt: new Date(now()).toISOString(), ...(user.setup === "password" ? { setup: "totp" as const } : {}) });
+        endAllLogins(user.id, bearer ? undefined : token); // остальные входы завершаются; текущий браузерный остаётся
+        log({ actor: user.id, action: "account.password.change" });
+        return send(res, 200, { ok: true, relogin: !!bearer, setup: user.setup === "password" ? "totp" : (user.setup ?? null) });
+      }
+
+      if (url === "/api/account/totp/start") {
+        if (user.setup === "password") return send(res, 409, { error: "Сначала смените пароль" });
+        if (!(await confirmPassword(body.password))) return send(res, 401, { error: "Неверный пароль" });
+        const secret = newTotpSecret();
+        await commitUser({ ...user, pendingTotp: secret });
+        log({ actor: user.id, action: "account.totp.start" });
+        return send(res, 200, { secret, uri: otpauthUri(user.username, secret) });
+      }
+
+      if (url === "/api/account/totp/confirm") {
+        if (user.setup === "password") return send(res, 409, { error: "Сначала смените пароль" });
+        if (!user.pendingTotp) return send(res, 409, { error: "Новый секрет не запрашивали" });
+        if (typeof body.code !== "string" || !verifyTotp(user.pendingTotp, body.code, now())) {
+          deps.throttle.fail(`acct:${user.id}`, now());
+          log({ actor: user.id, action: "account.verify.fail" });
+          return send(res, 401, { error: "Неверный код" });
+        }
+        const { pendingTotp: _p, setup: _s, ...rest } = user;
+        await commitUser({ ...rest, totpSecret: user.pendingTotp });
+        endAllLogins(user.id, bearer ? undefined : token);
+        log({ actor: user.id, action: "account.totp.enroll" });
+        return send(res, 200, { ok: true, relogin: !!bearer, setup: null });
+      }
+      return send(res, 404, { error: "Not found" });
+    }
+
+    // ---- экстренный доступ ----
+    if (url === "/api/breakglass" || url === "/api/breakglass/end") {
+      if (!can(actor, "visit.edit")) return send(res, 403, { error: "Недостаточно прав" });
+      if (req.method === "GET" && url === "/api/breakglass")
+        return send(res, 200, { active: bg.active(user.id, now()).map((id) => ({ patientId: id, name: patients.find((p) => p.id === id)?.name ?? id, expiresAt: new Date(bg.expiresAt(user.id, id) ?? 0).toISOString() })), reasons: REASONS });
+      if (!isPost) return send(res, 404, { error: "Not found" });
+      const body = await readBody();
+      if (!body) return send(res, 400, { error: "Неверный запрос" });
+      if (url === "/api/breakglass/end") {
+        if (typeof body.patientId !== "string") return send(res, 400, { error: "Неверный запрос" });
+        const ended = bg.end(user.id, body.patientId);
+        if (ended) log({ actor: user.id, action: "breakglass.end", target: body.patientId });
+        return send(res, 200, { ok: true });
+      }
+      if (typeof body.pin !== "string" || !/^\d{14}$/.test(body.pin) || !isReason(body.reason)) return send(res, 400, { error: "Укажите ПИН (14 цифр) и причину из списка" });
+      if (!breakGlassLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов" }); // считаются только попытки с ПИН нужной формы
+      const patient = patients.find((p) => p.pin === body.pin);
+      if (!patient) {
+        log({ actor: user.id, action: "breakglass.denied", detail: { reason: body.reason } }); // введённый ПИН в журнал не пишется
+        return send(res, 404, { error: "Пациент не найден" });
+      }
+      if (actor.assignedPatients.includes(patient.id)) return send(res, 409, { error: "Этот пациент уже закреплён за вами" });
+      if (bg.grant(user.id, patient.id, now()) === "limit") return send(res, 429, { error: "Одновременно можно открыть не больше трёх карт" });
+      log({ actor: user.id, action: "breakglass.start", target: patient.id, detail: { reason: body.reason, minutes: GRANT_MS / 60_000 } });
+      return send(res, 200, { patientId: patient.id, name: patient.name, expiresAt: new Date(bg.expiresAt(user.id, patient.id) ?? 0).toISOString() });
+    }
+
+    // ---- администратор: пользователи (медицинских данных не видит) ----
+    const adminUrl = /^\/api\/admin\/users(?:\/([A-Za-z0-9_-]{1,64})\/(disable|enable|reset|assign))?$/.exec(url);
+    if (adminUrl) {
+      if (!can(actor, "user.manage")) return send(res, 403, { error: "Недостаточно прав" });
+      const [, targetId, op] = adminUrl;
+      if (req.method === "GET" && !targetId) return send(res, 200, { users: deps.users.map(publicUser), patientIds: patients.map((p) => p.id) });
+      if (!isPost) return send(res, 404, { error: "Not found" });
+      const body = await readBody();
+      if (!body) return send(res, 400, { error: "Неверный запрос" });
+      const knownPatients = (x: unknown): string[] | null =>
+        Array.isArray(x) && x.length <= 500 && x.every((i) => typeof i === "string" && patients.some((p) => p.id === i)) ? [...new Set(x as string[])] : null;
+
+      if (!targetId) { // создание
+        const username = typeof body.username === "string" ? body.username.toLowerCase() : "";
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const assigned = body.assignedPatients === undefined ? [] : knownPatients(body.assignedPatients);
+        if (!USERNAME.test(username) || name.length < 1 || name.length > 100 || !ROLES.includes(body.role as never) || !assigned) return send(res, 400, { error: "Неверные данные пользователя" });
+        if (body.role !== "doctor" && assigned.length) return send(res, 400, { error: "Пациентов закрепляют только за врачами" });
+        if (deps.users.some((u) => u.username.toLowerCase() === username)) return send(res, 409, { error: "Такое имя уже занято" });
+        const password = tempPassword();
+        const totpSecret = newTotpSecret();
+        const created: UserRecord = { id: `u-${randomBytes(8).toString("hex")}`, username, name, role: body.role as UserRecord["role"], passwordHash: await hashPassword(password), totpSecret, assignedPatients: assigned, setup: "password" };
+        await commitUser(created);
+        log({ actor: user.id, action: "user.create", target: created.id, detail: { role: created.role } });
+        // Одноразовый пароль и секрет показываются один раз; при первом входе пользователь обязан сменить пароль и заново подключить второй фактор.
+        return send(res, 200, { user: publicUser(created), tempPassword: password, totpSecret, uri: otpauthUri(username, totpSecret) });
+      }
+
+      const target = deps.users.find((u) => u.id === targetId);
+      if (!target) return send(res, 404, { error: "Пользователь не найден" });
+      if (op === "disable" || op === "reset") {
+        if (target.id === user.id) return send(res, 409, { error: "Нельзя применить к своей записи" });
+      }
+      if (op === "disable") {
+        await commitUser({ ...target, disabled: true });
+        endAllLogins(target.id); bg.endAll(target.id);
+        log({ actor: user.id, action: "user.disable", target: target.id });
+        return send(res, 200, { user: publicUser({ ...target, disabled: true }) });
+      }
+      if (op === "enable") {
+        await commitUser({ ...target, disabled: false });
+        log({ actor: user.id, action: "user.enable", target: target.id });
+        return send(res, 200, { user: publicUser({ ...target, disabled: false }) });
+      }
+      if (op === "reset") { // забытый пароль или потерянный телефон
+        const password = tempPassword();
+        const newSecret = body.resetTotp === true ? newTotpSecret() : null;
+        const next: UserRecord = { ...target, passwordHash: await hashPassword(password), setup: "password", pendingTotp: undefined, ...(newSecret ? { totpSecret: newSecret } : {}) };
+        delete next.pendingTotp;
+        await commitUser(next);
+        endAllLogins(target.id); bg.endAll(target.id);
+        log({ actor: user.id, action: "user.reset", target: target.id, detail: { totp: newSecret !== null } });
+        return send(res, 200, { user: publicUser(next), tempPassword: password, ...(newSecret ? { totpSecret: newSecret, uri: otpauthUri(target.username, newSecret) } : {}) });
+      }
+      if (op === "assign") {
+        const assigned = knownPatients(body.patients);
+        if (!assigned || target.role !== "doctor") return send(res, 400, { error: "Неверные данные" });
+        await commitUser({ ...target, assignedPatients: assigned });
+        log({ actor: user.id, action: "user.assign", target: target.id, detail: { count: assigned.length } });
+        return send(res, 200, { user: publicUser({ ...target, assignedPatients: assigned }) });
+      }
+      return send(res, 404, { error: "Not found" });
+    }
 
     if (req.method === "GET" && url === "/api/audit/verify") {
       if (!can(actor, "audit.verify")) return send(res, 403, { error: "Недостаточно прав" });

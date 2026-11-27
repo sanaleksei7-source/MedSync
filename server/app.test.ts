@@ -5,6 +5,7 @@ import { createHandler, type UserRecord } from "./app";
 import { LoginThrottle, SessionStore, TokenStore, hashPassword, newTotpSecret, totpAt } from "./auth";
 import { createHash } from "node:crypto";
 import { verifyChain, type AuditRecord } from "./audit";
+import { patients } from "./patients";
 import { DemoSigner } from "./signer";
 import type { AsrEngine } from "./asr/engine";
 import { newKey, parseKeyring } from "./db/crypto";
@@ -29,6 +30,8 @@ const pgDb = process.argv.includes("--pglite") ? await openPglite() : null;
 if (pgDb) await migrate(pgDb);
 const audit: AuditRecord[] = [];
 let auditDown = false;
+let userDown = false;
+const persisted: string[] = [];
 let extractCalls = 0;
 let extractResult: { title: string; statements: { text: string; sourceIds: number[] }[] }[] = [];
 let extractFails = false;
@@ -53,6 +56,7 @@ const deps: Parameters<typeof createHandler>[0] = {
   signer: new DemoSigner("test-key"),
   audit,
   persistAudit: async () => { if (auditDown) throw new Error("disk full"); },
+  persistUser: async (u) => { if (userDown) throw new Error("db down"); persisted.push(u.id); },
   extract: async () => { extractCalls++; if (extractFails) throw new Error("model down"); return structuredClone(extractResult); },
   allowedOrigins: ["http://localhost:5173"],
   allowedHosts: [`127.0.0.1:${port}`],
@@ -60,7 +64,7 @@ const deps: Parameters<typeof createHandler>[0] = {
   dummyHash: hash,
 };
 const handler = createHandler(deps);
-server.on("request", (req, res) => void handler(req, res));
+server.on("request", (req, res) => { handler(req, res).catch(() => { if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" }); res.end("{}"); }); });
 
 const base = `http://127.0.0.1:${port}`;
 type R = { status: number; body: any; cookie?: string; headers?: Headers };
@@ -401,6 +405,121 @@ check("the alert is written to the audit log by the system", audit.some((r) => r
 check("alerts carry no names or medical text", !JSON.stringify(al0.body).includes("Иванова") && !JSON.stringify(al0.body).includes("Боль"));
 check("doctor cannot read alerts", (await call("GET", "/api/audit/alerts", { cookie: docA })).status === 403);
 check("alerts need a session", (await call("GET", "/api/audit/alerts")).status === 401);
+
+// --- учётные записи (шаг 3.5) ---
+const loginAs = async (username: string, password: string, secret: string) => {
+  const r = await call("POST", "/api/login", { body: { username, password, code: code(secret) } });
+  return { ...r, c: r.cookie?.split(";")[0] ?? "" };
+};
+const admin = await login("adm1", secrets.adm);
+check("admin lists users without hashes or secrets", await (async () => {
+  const r = await call("GET", "/api/admin/users", { cookie: admin });
+  const dump = JSON.stringify(r.body);
+  return r.status === 200 && r.body.users.length >= 4 && !dump.includes("passwordHash") && !dump.includes("totpSecret") && !dump.includes("scrypt$") && r.body.patientIds.join() === "p1,p2,p3,p4";
+})());
+check("doctor and auditor cannot reach user admin; no session → 401", (await call("GET", "/api/admin/users", { cookie: docA })).status === 403 && (await call("GET", "/api/admin/users", { cookie: audA })).status === 403 && (await call("GET", "/api/admin/users")).status === 401 && (await post(docA, "/api/admin/users", { username: "evil1", name: "x", role: "admin" })).status === 403);
+
+const mk = (b: unknown) => post(admin, "/api/admin/users", b);
+check("bad user data → 400", (await mk({ username: "A", name: "x", role: "doctor" })).status === 400 && (await mk({ username: "okname", name: "", role: "doctor" })).status === 400 && (await mk({ username: "okname", name: "x", role: "root" })).status === 400 && (await mk({ username: "okname", name: "x", role: "doctor", assignedPatients: ["p99"] })).status === 400 && (await mk({ username: "okname", name: "x", role: "auditor", assignedPatients: ["p1"] })).status === 400);
+const nu = await mk({ username: "NewDoc", name: "Новый врач (демо)", role: "doctor", assignedPatients: ["p1"] });
+check("admin creates a user and gets a one-time password and second-factor secret", nu.status === 200 && nu.body.user.username === "newdoc" && nu.body.user.setup === "password" && nu.body.tempPassword.length >= 12 && /^[A-Z2-7]{32}$/.test(nu.body.totpSecret) && nu.body.uri.startsWith("otpauth://totp/MedSync:newdoc?secret="));
+check("duplicate user name (any case) → 409", (await mk({ username: "newdoc", name: "x", role: "doctor" })).status === 409 && (await mk({ username: "DOC1", name: "x", role: "doctor" })).status === 409);
+check("the new user was handed to the store", persisted.includes(nu.body.user.id));
+
+const first = await loginAs("newdoc", nu.body.tempPassword, nu.body.totpSecret);
+check("first login with the one-time password works and says setup is needed", first.status === 200 && first.body.setup === "password");
+check("until setup is finished only account routes work", (await call("GET", "/api/patients", { cookie: first.c })).status === 403 && (await call("GET", "/api/patients", { cookie: first.c })).body.setup === "password" && (await post(first.c, "/api/visits", { patientId: "p1", docType: "osmotr" })).status === 403 && (await call("GET", "/api/me", { cookie: first.c })).body.setup === "password");
+check("second factor cannot be changed before the password", (await post(first.c, "/api/account/totp/start", { password: nu.body.tempPassword })).status === 409 && (await post(first.c, "/api/account/totp/confirm", { code: "123456" })).status === 409);
+const chg = (cookie: string, body: unknown) => post(cookie, "/api/account/password", body);
+const tc = () => code(nu.body.totpSecret);
+check("password change needs the current password and a valid code", (await chg(first.c, { current: "wrong-password-xx", next: "A-brand-new-password-1", code: tc() })).status === 401 && (await chg(first.c, { current: nu.body.tempPassword, next: "A-brand-new-password-1", code: "000000" })).status === 401);
+check("weak new passwords are refused", (await chg(first.c, { current: nu.body.tempPassword, next: "short", code: tc() })).body?.error?.includes("короче") && (await chg(first.c, { current: nu.body.tempPassword, next: nu.body.tempPassword, code: tc() })).status === 400 && (await chg(first.c, { current: nu.body.tempPassword, next: "xx-NEWDOC-password-xx", code: tc() })).status === 400 && (await chg(first.c, { current: nu.body.tempPassword, next: "aaaaaaaaaaaaaaaa", code: tc() })).status === 400);
+const second = await loginAs("newdoc", nu.body.tempPassword, nu.body.totpSecret); // второй вход, пока пароль ещё временный
+const newPw = "A-brand-new-password-1";
+const ch1 = await chg(first.c, { current: nu.body.tempPassword, next: newPw, code: tc() });
+check("password change works and moves setup on to the second factor", ch1.status === 200 && ch1.body.setup === "totp");
+check("other logins of that user are ended, the current one stays", (await call("GET", "/api/me", { cookie: second.c })).status === 401 && (await call("GET", "/api/me", { cookie: first.c })).status === 200);
+check("old password no longer works, new one does", (await loginAs("newdoc", nu.body.tempPassword, nu.body.totpSecret)).status === 401 && (await loginAs("newdoc", newPw, nu.body.totpSecret)).status === 200);
+check("still locked to account routes until the second factor is re-enrolled", (await call("GET", "/api/patients", { cookie: first.c })).status === 403 && (await chg(first.c, { current: newPw, next: "Another-password-22", code: tc() })).status === 409);
+check("starting enrolment needs the password", (await post(first.c, "/api/account/totp/start", { password: "wrong-password-xx" })).status === 401);
+const en = await post(first.c, "/api/account/totp/start", { password: newPw });
+check("enrolment returns a fresh secret and an authenticator link", en.status === 200 && /^[A-Z2-7]{32}$/.test(en.body.secret) && en.body.secret !== nu.body.totpSecret && en.body.uri.includes(en.body.secret));
+check("a wrong confirmation code is refused and the old secret still works", (await post(first.c, "/api/account/totp/confirm", { code: "000000" })).status === 401 && (await loginAs("newdoc", newPw, nu.body.totpSecret)).status === 200);
+const cf = await post(first.c, "/api/account/totp/confirm", { code: code(en.body.secret) });
+check("confirming with the new secret finishes the setup", cf.status === 200 && cf.body.setup === null && (await call("GET", "/api/patients", { cookie: first.c })).status === 200);
+check("the administrator-known secret is dead; the new one works", (await loginAs("newdoc", newPw, nu.body.totpSecret)).status === 401 && (await loginAs("newdoc", newPw, en.body.secret)).status === 200);
+check("confirm without a pending secret → 409", (await post(first.c, "/api/account/totp/confirm", { code: code(en.body.secret) })).status === 409);
+check("account routes need a session and the CSRF header", (await call("POST", "/api/account/password", { body: {} })).status === 401 && (await call("POST", "/api/account/password", { cookie: first.c, body: {}, xrw: false })).status === 403);
+
+// подбор текущего пароля через смену пароля блокируется
+const brute = await loginAs("newdoc", newPw, en.body.secret);
+let lockedAt = 0;
+for (let i = 1; i <= 8 && !lockedAt; i++) if ((await chg(brute.c, { current: "wrong-password-xx", next: "Whatever-password-33", code: "000000" })).status === 429) lockedAt = i;
+check("guessing the current password through the change form is locked out", lockedAt > 0 && lockedAt <= 6);
+
+// сброс администратором, блокировка, закрепление
+const rs = await post(admin, `/api/admin/users/${nu.body.user.id}/reset`, { resetTotp: true });
+check("admin reset gives a new one-time password and secret", rs.status === 200 && rs.body.tempPassword.length >= 12 && /^[A-Z2-7]{32}$/.test(rs.body.totpSecret) && rs.body.user.setup === "password");
+check("reset ends every login of that user", (await call("GET", "/api/me", { cookie: first.c })).status === 401 && (await call("GET", "/api/me", { cookie: brute.c })).status === 401);
+const afterReset = await loginAs("newdoc", rs.body.tempPassword, rs.body.totpSecret);
+check("after a reset the user must set up again", afterReset.status === 200 && afterReset.body.setup === "password");
+check("reset without resetTotp keeps the secret", await (async () => {
+  const r2 = await post(admin, `/api/admin/users/${nu.body.user.id}/reset`, {});
+  return r2.status === 200 && r2.body.totpSecret === undefined && (await loginAs("newdoc", r2.body.tempPassword, rs.body.totpSecret)).status === 200;
+})());
+check("admin cannot reset or disable their own account", (await post(admin, `/api/admin/users/${users.find((u) => u.username === "adm1")!.id}/disable`)).status === 409 && (await post(admin, `/api/admin/users/${users.find((u) => u.username === "adm1")!.id}/reset`)).status === 409);
+check("unknown user → 404", (await post(admin, "/api/admin/users/nobody/disable")).status === 404);
+const rs3 = await post(admin, `/api/admin/users/${nu.body.user.id}/reset`, {});
+const live = await loginAs("newdoc", rs3.body.tempPassword, rs.body.totpSecret);
+const dis = await post(admin, `/api/admin/users/${nu.body.user.id}/disable`);
+check("disabling ends logins", dis.status === 200 && dis.body.user.disabled === true && (await call("GET", "/api/me", { cookie: live.c })).status === 401);
+check("a disabled account is refused even with right credentials, with the usual error, and it is audited", await (async () => {
+  const r = await loginAs("newdoc", rs3.body.tempPassword, rs.body.totpSecret);
+  return r.status === 401 && r.body.error === "Неверное имя, пароль или код" && audit.some((x) => x.action === "login.disabled");
+})());
+check("enabling restores access", (await post(admin, `/api/admin/users/${nu.body.user.id}/enable`)).status === 200 && (await loginAs("newdoc", rs3.body.tempPassword, rs.body.totpSecret)).status === 200);
+check("assign changes the doctor's patients", await (async () => {
+  const a = await post(admin, `/api/admin/users/${nu.body.user.id}/assign`, { patients: ["p2", "p4"] });
+  const bad = await post(admin, `/api/admin/users/${nu.body.user.id}/assign`, { patients: ["p99"] });
+  const notDoc = await post(admin, `/api/admin/users/${users.find((u) => u.username === "aud1")!.id}/assign`, { patients: ["p1"] });
+  return a.status === 200 && a.body.user.assignedPatients.join() === "p2,p4" && bad.status === 400 && notDoc.status === 400 && users.find((u) => u.id === nu.body.user.id)!.assignedPatients.join() === "p2,p4";
+})());
+check("account changes are audited without any secret, password or hash", await (async () => {
+  const dump = JSON.stringify(audit);
+  return ["user.create", "user.reset", "user.disable", "user.enable", "user.assign", "account.password.change", "account.totp.enroll", "login.disabled"].every((a) => audit.some((r) => r.action === a))
+    && !dump.includes(nu.body.tempPassword) && !dump.includes(nu.body.totpSecret) && !dump.includes(newPw) && !dump.includes(en.body.secret) && !dump.includes("scrypt$");
+})());
+userDown = true;
+check("when the user cannot be saved the change fails and nothing changes in memory", await (async () => {
+  const before = users.length;
+  const r = await mk({ username: "ghost1", name: "x", role: "doctor" });
+  const r2 = await post(admin, `/api/admin/users/${nu.body.user.id}/assign`, { patients: ["p1"] });
+  return r.status === 500 && r2.status === 500 && users.length === before && users.find((u) => u.id === nu.body.user.id)!.assignedPatients.join() === "p2,p4";
+})());
+userDown = false;
+
+// --- экстренный доступ (break-glass) ---
+const bgDoc = await login("doc1", secrets.doc);   // врач с пациентами p1, p2
+const otherDoc = await login("doc2", secrets.doc2); // врач с пациентом p3
+const pinP4 = patients.find((p) => p.id === "p4")!.pin; // p4 не закреплён ни за кем из них
+check("emergency access needs a valid PIN and a reason from the list", (await post(bgDoc, "/api/breakglass", { pin: pinP4, reason: "просто так" })).status === 400 && (await post(bgDoc, "/api/breakglass", { pin: "123", reason: "emergency" })).status === 400 && (await post(bgDoc, "/api/breakglass", { reason: "emergency" })).status === 400);
+check("before the grant the other doctor's patient is closed", (await post(bgDoc, "/api/visits", { patientId: "p4", docType: "osmotr" })).status === 403 && !(await call("GET", "/api/patients", { cookie: bgDoc })).body.patients.some((p: { id: string }) => p.id === "p4"));
+const wrongPin = patients.find((p) => p.id === "p2")!.pin.replace(/\d$/, (d) => String((+d + 1) % 10));
+check("an unknown PIN is a plain 404, is audited, and the typed PIN is not written down", (await post(bgDoc, "/api/breakglass", { pin: wrongPin, reason: "emergency" })).status === 404 && audit.some((r) => r.action === "breakglass.denied") && !JSON.stringify(audit).includes(wrongPin));
+check("a patient already assigned to the doctor → 409", (await post(bgDoc, "/api/breakglass", { pin: patients.find((p) => p.id === "p1")!.pin, reason: "emergency" })).status === 409);
+check("admin and auditor cannot use emergency access", (await post(admin, "/api/breakglass", { pin: pinP4, reason: "emergency" })).status === 403 && (await post(audA, "/api/breakglass", { pin: pinP4, reason: "emergency" })).status === 403);
+const g = await post(bgDoc, "/api/breakglass", { pin: pinP4, reason: "unconscious" });
+check("emergency access opens the card for a limited time", g.status === 200 && g.body.patientId === "p4" && Date.parse(g.body.expiresAt) > Date.now() && Date.parse(g.body.expiresAt) <= Date.now() + 30 * 60_000 + 5000);
+check("with it the doctor sees the patient and can start a visit", (await call("GET", "/api/patients", { cookie: bgDoc })).body.patients.some((p: { id: string }) => p.id === "p4") && (await post(bgDoc, "/api/visits", { patientId: "p4", docType: "osmotr" })).status === 200);
+const bgVisit = (await call("GET", "/api/visits", { cookie: bgDoc })).body.visits.find((v: { patientId: string }) => v.patientId === "p4");
+check("but cannot sign a document for that patient", bgVisit && (await post(bgDoc, `/api/visits/${bgVisit.id}/sign`)).status === 403);
+check("the grant is audited with a reason code and raises an alert for the auditor", audit.some((r) => r.action === "breakglass.start" && r.target === "p4" && r.detail?.reason === "unconscious" && r.actor === users.find((u) => u.username === "doc1")!.id) && (await call("GET", "/api/audit/alerts", { cookie: audA })).body.alerts.some((a: { rule: string; key: string }) => a.rule === "breakglass" && a.key.endsWith(">p4")));
+check("another doctor gets nothing from someone else's emergency access", (await post(otherDoc, "/api/visits", { patientId: "p4", docType: "osmotr" })).status === 403 && (await call("GET", "/api/breakglass", { cookie: otherDoc })).body.active.length === 0);
+check("the active grants can be listed", (await call("GET", "/api/breakglass", { cookie: bgDoc })).body.active.map((a: { patientId: string }) => a.patientId).join() === "p4");
+check("ending the access closes the card and hides its visits from the history", (await post(bgDoc, "/api/breakglass/end", { patientId: "p4" })).status === 200 && !(await call("GET", "/api/patients", { cookie: bgDoc })).body.patients.some((p: { id: string }) => p.id === "p4") && !(await call("GET", "/api/visits", { cookie: bgDoc })).body.visits.some((v: { patientId: string }) => v.patientId === "p4") && (await post(bgDoc, "/api/visits", { patientId: "p4", docType: "osmotr" })).status === 403);
+check("the end is audited", audit.some((r) => r.action === "breakglass.end" && r.target === "p4"));
+check("guessing PINs through emergency access is rate limited", await (async () => { let limited = false; for (let i = 0; i < 8 && !limited; i++) limited = (await post(bgDoc, "/api/breakglass", { pin: wrongPin, reason: "emergency" })).status === 429; return limited; })());
+check("audit has no PIN and no names after all that", !/\d{14}/.test(JSON.stringify(audit).replace(/[0-9a-f]{32,64}/g, "")) && !JSON.stringify(audit).includes("Иванова"));
 
 // --- блокировка перебора ---
 for (let i = 0; i < 5; i++) await call("POST", "/api/login", { body: { username: "adm1", password: "wrong-password-1", code: "000000" } });

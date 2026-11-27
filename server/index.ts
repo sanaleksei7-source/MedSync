@@ -13,15 +13,11 @@ import { openFromEnv } from "./db/db";
 import { migrate } from "./db/migrate";
 import { PgVisitStore } from "./db/visit-store";
 import { AuditWriter, importAudit, loadAudit } from "./db/audit-store";
+import { importUsers, loadUsers, saveUser } from "./db/user-store";
 
 const USERS_FILE = "data/users.json";
 const AUDIT_FILE = "data/audit.log";
 
-if (!existsSync(USERS_FILE)) {
-  console.error("Нет data/users.json. Создайте вымышленных пользователей: npm run seed");
-  process.exit(1);
-}
-const users = JSON.parse(readFileSync(USERS_FILE, "utf-8")) as UserRecord[];
 
 // Ключ читается из переменной окружения ANTHROPIC_API_KEY (файл .env, не коммитится).
 const client = new Anthropic();
@@ -48,10 +44,23 @@ if (!chainCheck.ok) {
 }
 const auditWriter = new AuditWriter(db);
 
+// Учётные записи лежат в таблице users (секреты второго фактора зашифрованы). Прежний файл data/users.json один раз переносится в неё.
+const ring = parseKeyring(process.env.DATA_KEYS);
+let users = await loadUsers(db, ring);
+if (users.length === 0) {
+  if (!existsSync(USERS_FILE)) {
+    console.error("Нет пользователей. Создайте вымышленных: npm run seed (файл data/users.json перенесётся в базу при запуске).");
+    process.exit(1);
+  }
+  const n = await importUsers(db, ring, JSON.parse(readFileSync(USERS_FILE, "utf-8")) as UserRecord[]);
+  console.log(`Пользователи перенесены из ${USERS_FILE} в базу: ${n} (файл оставлен как есть; после проверки его лучше убрать, в нём хэши паролей и секреты).`);
+  users = await loadUsers(db, ring);
+}
+
 const handler = createHandler({
   users,
   sessions: new SessionStore(),
-  visits: new PgVisitStore(db, parseKeyring(process.env.DATA_KEYS)),
+  visits: new PgVisitStore(db, ring),
   tokens: new TokenStore(),
   appOrigins: process.env.APP_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ?? [],
   throttle: new LoginThrottle(),
@@ -59,6 +68,7 @@ const handler = createHandler({
   audit,
   asr,
   persistAudit: auditWriter.write,
+  persistUser: (u) => saveUser(db, ring, u),
   extract: (docTitle, sectionTitles, lines) => {
     if (!process.env.ANTHROPIC_API_KEY)
       throw new Error("Не задан ANTHROPIC_API_KEY. Создайте файл .env (см. README) и перезапустите сервер.");

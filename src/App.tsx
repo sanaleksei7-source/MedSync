@@ -4,6 +4,8 @@ import Patients from "./pages/Patients";
 import Appointment from "./pages/Appointment";
 import History from "./pages/History";
 import Login from "./pages/Login";
+import Account from "./pages/Account";
+import AdminUsers from "./pages/AdminUsers";
 import { api, ApiError, type Me } from "./api";
 
 const tabs = [
@@ -20,6 +22,8 @@ const alertLabel: Record<string, string> = {
   "token.reuse": "Повторное использование токена",
   "read.burst": "Массовое чтение карт",
   "off.hours": "Работа ночью",
+  "breakglass": "Экстренный доступ к карте",
+  "account.verify.burst": "Подбор при смене пароля",
 };
 
 function AuditPanel() {
@@ -58,6 +62,7 @@ function AuditPanel() {
 export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined); // undefined = ещё проверяем
   const [tab, setTab] = useState<Tab>("home");
+  const [showAccount, setShowAccount] = useState(false);
   const [resume, setResume] = useState<string | null>(null); // приём из истории, который надо продолжить
 
   useEffect(() => {
@@ -68,8 +73,10 @@ export default function App() {
   }, []);
 
   const logout = async () => {
-    try { await api("POST", "/api/logout", {}); } finally { setMe(null); setTab("home"); setResume(null); }
+    try { await api("POST", "/api/logout", {}); } finally { setMe(null); setTab("home"); setResume(null); setShowAccount(false); }
   };
+
+  const refreshMe = () => api<Me>("GET", "/api/me").then(setMe, () => setMe(null));
 
   if (me === undefined) return <div className="p-6 text-slate-500">Загрузка…</div>;
 
@@ -77,7 +84,7 @@ export default function App() {
     <div className="min-h-dvh bg-slate-50 text-slate-900">
       <header className="safe-top sticky top-0 z-20 flex flex-wrap items-center gap-x-6 gap-y-1 border-b bg-white px-4 py-2 md:px-6 md:py-3">
         <span className="text-lg font-semibold text-teal-700">MedSync</span>
-        {me?.role === "doctor" && (
+        {me?.role === "doctor" && !me.setup && (
           <nav className="hidden gap-1 md:flex">
             {tabs.map((t) => (
               <button
@@ -94,14 +101,18 @@ export default function App() {
         {me && (
           <span className="flex items-center gap-2 text-sm text-slate-600">
             <span className="max-w-[10rem] truncate">{me.name}</span>
+            {!me.setup && <button onClick={() => setShowAccount((v) => !v)} className="rounded border px-3 py-1 text-xs">Аккаунт</button>}
             <button onClick={logout} className="rounded border px-3 py-1 text-xs">Выйти</button>
           </span>
         )}
       </header>
-      <main className={`mx-auto max-w-5xl p-4 md:p-6 ${me?.role === "doctor" ? "pb-24 md:pb-6" : ""}`}>
+      <main className={`mx-auto max-w-5xl p-4 md:p-6 ${me?.role === "doctor" && !me.setup ? "pb-24 md:pb-6" : ""}`}>
         {!me && <Login onLogin={setMe} />}
-        {me && me.role !== "doctor" && <AuditPanel />}
-        {me?.role === "doctor" && (
+        {me?.setup && <Account me={me} forced onChanged={refreshMe} onRelogin={() => setMe(null)} />}
+        {me && !me.setup && showAccount && <Account me={me} forced={false} onChanged={refreshMe} onRelogin={() => { setMe(null); setShowAccount(false); }} />}
+        {me && !me.setup && !showAccount && me.role === "admin" && <AdminUsers selfId={me.id} />}
+        {me && !me.setup && !showAccount && me.role === "auditor" && <AuditPanel />}
+        {me?.role === "doctor" && !me.setup && !showAccount && (
           <>
             {tab === "home" && <Home onStart={() => setTab("appointment")} />}
             {tab === "patients" && <Patients />}
@@ -110,12 +121,12 @@ export default function App() {
           </>
         )}
       </main>
-      <footer className={`mx-auto max-w-5xl px-4 text-xs text-slate-500 md:px-6 md:pb-8 ${me?.role === "doctor" ? "pb-28" : "pb-8"}`}>
+      <footer className={`mx-auto max-w-5xl px-4 text-xs text-slate-500 md:px-6 md:pb-8 ${me?.role === "doctor" && !me.setup ? "pb-28" : "pb-8"}`}>
         Демо-версия. Все пациенты и данные вымышленные. Разговор — заранее написанный сценарий, а не запись и не
         реальное распознавание речи. ЭЦП и отправка в медкарту — имитация без юридической силы. Не является
         медицинским изделием.
       </footer>
-      {me?.role === "doctor" && (
+      {me?.role === "doctor" && !me.setup && (
         <nav className="safe-bottom fixed inset-x-0 bottom-0 z-20 grid grid-cols-4 border-t bg-white md:hidden" aria-label="Разделы">
           {tabs.map((t) => (
             <button

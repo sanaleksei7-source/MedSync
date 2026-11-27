@@ -26,7 +26,7 @@ export const DEFAULT_ALERTS: AlertConfig = {
   utcOffsetHours: 6,
 };
 
-const DENIED = new Set(["visit.denied", "document.sign.denied"]);
+const DENIED = new Set(["visit.denied", "document.sign.denied", "breakglass.denied"]);
 const READS = new Set(["visit.read", "visit.list", "patient.list"]);
 const PATIENT_DATA = new Set(["visit.read", "visit.list", "patient.list", "visit.create", "visit.transcript", "visit.decision", "document.sign", "extract.request"]);
 
@@ -66,6 +66,12 @@ export class AlertMonitor {
       const user = String(e.detail?.user ?? "?");
       const n = this.count(`loginfail|${user}`, t);
       if (n >= c.loginFailLimit) out.push(this.raise("login.fail.burst", user, n, `Подбор пароля: ${n} неудачных входов за ${c.windowMs / 60000} мин`, t));
+    }
+    // Экстренный доступ: тревога на каждый случай, чтобы аудитор разобрал его (кто, чья карта, какая причина).
+    if (e.action === "breakglass.start") out.push(this.raise("breakglass", `${e.actor}>${e.target ?? "?"}`, 1, "Экстренный доступ к карте пациента", t));
+    if (e.action === "account.verify.fail") {
+      const n = this.count(`acctfail|${e.actor}`, t);
+      if (n >= c.deniedLimit) out.push(this.raise("account.verify.burst", e.actor, n, `Неверный пароль или код при смене данных учётной записи (${n} за ${c.windowMs / 60000} мин)`, t));
     }
     if (e.action === "token.reuse") out.push(this.raise("token.reuse", e.actor, 1, "Повторное использование токена обновления: возможна кража токена", t));
     if (READS.has(e.action)) {
