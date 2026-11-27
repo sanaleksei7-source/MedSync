@@ -56,7 +56,7 @@ This is the hardest speech task, and the current numbers are not good enough (se
 - Speaker labels: today they are manual. On a phone this is awkward; options are two phones/microphones, or a diarization model on the server (to be tested).
 
 ## 4a. What can be reused as it is
-Server: `server/` (auth, roles, audit, sign rules, `/api/asr`, `/api/extract`). Shared logic: `src/domain`, `src/audio`, `src/data`. Web UI: pages need a responsive pass, not a rewrite.
+Server: `server/` (auth, roles, audit, sign rules, `/api/asr`, `/api/visits`). Shared logic: `src/domain`, `src/audio`, `src/data`. Web UI: pages need a responsive pass, not a rewrite.
 
 ## 5. Work packages, in order
 

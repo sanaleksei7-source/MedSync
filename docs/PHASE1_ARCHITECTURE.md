@@ -13,7 +13,7 @@ Companion to `SECURITY_PLAN.md`. Everything here uses **fictional data only**. I
 | CSRF / cross-site | `server/app.ts`, `server/guards.ts` | Origin allow-list, Host allow-list, JSON-only content type, required `X-Requested-With` header on POST | integration |
 | Account enumeration | `server/app.ts` | same status and message for unknown user, wrong password and wrong code; a dummy hash is verified for unknown users | integration |
 | Roles and access | `server/rbac.ts` | `doctor`, `admin`, `auditor`; a doctor reaches only patients assigned to them; admin and auditor see no patient data | 10 unit + integration |
-| Server-side sign rules | `server/app.ts`, `src/domain/rules.ts` | the server recomputes allergy conflicts from the transcript and re-checks unsourced facts; the client cannot claim "reviewed" | integration |
+| Server-side visits and sign rules | `server/visits.ts`, `server/app.ts`, `src/domain/rules.ts` | the server holds the transcript, draft and decisions; it recomputes allergy conflicts and unsourced facts from its own data and hashes only what it holds; signed visits are immutable; visits are owner-only | integration |
 | Audit log | `server/audit.ts` | append-only JSON Lines, each record includes the previous record's hash; editing, removing, reordering or truncating is detected; stores ids, action types and document hashes only — no medical text, names or ПИН | 9 unit + integration |
 | Signer interface | `server/signer.ts` | signing sits behind an interface; the current `DemoSigner` is an HMAC and is **not** an ЭЦП | integration |
 
@@ -21,7 +21,7 @@ Run `npm test` (all tests), `npm run seed` (creates fictional users in the gitig
 
 ## 2. Known limitations of the prototype (must be closed before real use)
 
-1. **Drafts are held by the client.** The server verifies the rules on what the client sends, but the text being signed comes from the client. Real design: the server stores the draft, the doctor's decisions and the transcript, and signs only what it holds.
+1. ~~**Drafts are held by the client.**~~ **Closed on 2026-11-27 (dev plan 3.1).** The server stores the transcript, the draft and the doctor's decisions (`server/visits.ts`) and signs only what it holds; the client sends commands, not text to sign. Still open from this item: the store is in memory (lost on restart, 3.2 adds the database), and an open draft cannot yet be resumed after a page refresh.
 2. **Patient data still ships in the web bundle.** The patient list and the allergy table are static fictional data in `src/data/`. Real design: patients come from the server after an access check, and every read is audited.
 3. **History is in the browser** (`localStorage`). Real design: stored server-side per clinic with access control.
 4. **Storage is JSON files** (`data/users.json`, `data/audit.log`). Real design: a database with encryption at rest, backups, restore tests and per-clinic isolation. The audit log should also be shipped to write-once storage, because a local file can be replaced wholesale together with its chain.

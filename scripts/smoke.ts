@@ -25,31 +25,30 @@ const login = async (u: string) => {
 const doctor = await login("doctor1");
 out.push(`doctor1 login: ${doctor.status}`);
 
-const lines = [
-  { id: 1, speaker: "Пациент", text: "Болит горло." },
-  { id: 2, speaker: "Врач", text: "Добавим амоксициллин." },
+// Демо-приём: разговор и черновик документа берёт сам сервер. Клиент присылает только команды.
+const post = async (cookie: string, path: string, body: unknown = {}) => {
+  const r = await fetch(base + path, { method: "POST", headers: { ...h, Cookie: cookie }, body: JSON.stringify(body) });
+  return { status: r.status, body: (await r.json().catch(() => null)) as any };
+};
+const visit = await post(doctor.cookie, "/api/visits", { patientId: "p1", docType: "osmotr", demo: true });
+out.push(`create demo visit (expect 200): ${visit.status}`);
+out.push(`create visit for another doctor's patient (expect 403): ${(await post(doctor.cookie, "/api/visits", { patientId: "p3", docType: "osmotr" })).status}`);
+const id = visit.body?.id;
+out.push(`sign with unsourced fact and allergy conflict (expect 409): ${(await post(doctor.cookie, `/api/visits/${id}/sign`)).status}`);
+// Решаем: оставляем непроверенный факт «Диагноз», убираем назначение амоксициллина (аллергия на пенициллин).
+const secs = visit.body.sections as { title: string; statements: { sourceIds: number[] }[] }[];
+const unsourced = secs.flatMap((s, si) => s.statements.map((st, i) => ({ st, key: `${si}-${i}` }))).filter((x) => x.st.sourceIds.length === 0);
+const orders = secs.findIndex((s) => s.title === "Назначения");
+const changes = [
+  ...unsourced.map((x) => ({ key: x.key, action: "kept" })),
+  ...secs[orders].statements.map((_, i) => ({ key: `${orders}-${i}`, action: "removed" })).slice(1, 2),
 ];
-const sections = [
-  { title: "Жалобы", statements: [{ text: "Боль в горле.", sourceIds: [1] }] },
-  { title: "Назначения", statements: [{ text: "Амоксициллин", sourceIds: [2] }] },
-];
-const sign = async (cookie: string, patientId: string, decisions: object, ack: number[]) =>
-  (await fetch(base + "/api/sign", {
-    method: "POST",
-    headers: { ...h, Cookie: cookie },
-    body: JSON.stringify({ patientId, docType: "Осмотр", lines, sections, decisions, ackAllergy: ack }),
-  })).status;
-
-out.push(`sign with allergy conflict (expect 409): ${await sign(doctor.cookie, "p1", {}, [])}`);
-out.push(`sign another doctor's patient (expect 403): ${await sign(doctor.cookie, "p3", {}, [])}`);
-out.push(`sign after removing the order (expect 200): ${await sign(doctor.cookie, "p1", { "1-0": { action: "removed" } }, [])}`);
-
-const ex = await fetch(base + "/api/extract", {
-  method: "POST",
-  headers: { ...h, Cookie: doctor.cookie },
-  body: JSON.stringify({ docTitle: "Справка", sectionTitles: ["Жалобы"], lines }),
-});
-out.push(`extract: ${ex.status} ${(await ex.text()).slice(0, 80)}`);
+out.push(`record the doctor's decisions (expect 200): ${(await post(doctor.cookie, `/api/visits/${id}/decisions`, { changes })).status}`);
+out.push(`sign after the decisions (expect 200 or 409 if more is left): ${(await post(doctor.cookie, `/api/visits/${id}/sign`)).status}`);
+out.push(`another doctor reads this visit (expect 404): ${await (async () => {
+  const d2 = await login("doctor2");
+  return (await fetch(base + `/api/visits/${id}`, { headers: { Cookie: d2.cookie } })).status;
+})()}`);
 
 const auditor = await login("auditor1");
 const v = await fetch(base + "/api/audit/verify", { headers: { Cookie: auditor.cookie } });

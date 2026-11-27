@@ -6,10 +6,10 @@ import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
-import { findConflicts } from "../src/data/allergy";
 import { patients } from "../src/data/patients";
-import { finalizeSections, signBlockers, type Decisions } from "../src/domain/rules";
-import type { Line, Section } from "../src/data/script";
+import { finalizeSections } from "../src/domain/rules";
+import { docs, type Line, type Section } from "../src/data/script";
+import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, blockersFor, clampSections, createVisit, isDocType, parseLines, toView, type VisitStore } from "./visits";
 
 export interface UserRecord {
   id: string;
@@ -24,6 +24,7 @@ export interface UserRecord {
 export interface Deps {
   users: UserRecord[];
   sessions: SessionStore;
+  visits?: VisitStore; // приёмы; по умолчанию в памяти (на шаге 3.2 — база данных)
   tokens?: TokenStore; // вход для мобильных приложений; без него вход по токену отключён
   appOrigins?: string[]; // origin обёрнутых приложений (capacitor://localhost, https://localhost): им разрешены CORS и токены, но не cookie
   throttle: LoginThrottle;
@@ -43,7 +44,6 @@ export interface Deps {
 }
 
 const COOKIE = "medsync_session";
-const MAX_LINES = 400;
 
 function send(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   res.writeHead(status, {
@@ -92,26 +92,9 @@ function cookieToken(req: http.IncomingMessage): string | undefined {
   return undefined;
 }
 
-const isLine = (l: unknown): l is Line =>
-  !!l && typeof l === "object" && Number.isInteger((l as Line).id) && typeof (l as Line).text === "string" &&
-  ((l as Line).speaker === "Врач" || (l as Line).speaker === "Пациент");
-
-const isSection = (s: unknown): s is Section =>
-  !!s && typeof s === "object" && typeof (s as Section).title === "string" && Array.isArray((s as Section).statements) &&
-  (s as Section).statements.every(
-    (st) => typeof st?.text === "string" && Array.isArray(st.sourceIds) && st.sourceIds.every((n: unknown) => Number.isInteger(n)),
-  );
-
-function isDecisions(d: unknown): d is Decisions {
-  if (!d || typeof d !== "object") return false;
-  return Object.values(d).every(
-    (v) => v && ["kept", "removed", "edited"].includes((v as { action: string }).action) &&
-      ((v as { text?: unknown }).text === undefined || typeof (v as { text?: unknown }).text === "string"),
-  );
-}
-
 export function createHandler(deps: Deps) {
   const now = deps.now ?? Date.now;
+  const visits = deps.visits ?? new MemoryVisitStore();
   const ipLimiter = new RateLimiter(deps.ipLimitPerMinute ?? 600, 60_000); // клиника может быть за одним внешним адресом
   const loginLimiter = new RateLimiter(deps.loginLimitPerMinute ?? 20, 60_000);
   const refreshLimiter = new RateLimiter(60, 60_000); // обновление токена идёт каждые несколько минут, 60 в минуту с адреса клиники хватает
@@ -265,55 +248,113 @@ export function createHandler(deps: Deps) {
       }
     }
 
-    if (isPost && url === "/api/extract") {
-      if (!can(actor, "extract.run")) return send(res, 403, { error: "Недостаточно прав" });
-      if (!extractLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов, подождите минуту" });
-      let body: { docTitle?: unknown; sectionTitles?: unknown; lines?: unknown };
-      try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверные данные запроса" }); }
-      const { docTitle, sectionTitles, lines } = body;
-      if (typeof docTitle !== "string" || !Array.isArray(sectionTitles) || !sectionTitles.every((t) => typeof t === "string") ||
-          !Array.isArray(lines) || lines.length === 0 || lines.length > MAX_LINES || !lines.every(isLine))
-        return send(res, 400, { error: "Неверные данные запроса" });
-      log({ actor: user.id, action: "extract.request", detail: { lines: lines.length } });
-      try {
-        return send(res, 200, { sections: await deps.extract(docTitle, sectionTitles as string[], lines) });
-      } catch (e) {
-        console.error(e);
-        return send(res, 502, { error: e instanceof Error && e.message ? e.message : "Ошибка модели" });
-      }
-    }
+    // ---- приёмы: расшифровка, черновик и решения врача хранит сервер ----
+    const visitUrl = /^\/api\/visits(?:\/([0-9a-f]{32}))?(?:\/(transcript|extract|decisions|sign))?$/.exec(url);
+    if (visitUrl) {
+      const [, visitId, action] = visitUrl;
 
-    if (isPost && url === "/api/sign") {
-      let body: { patientId?: unknown; docType?: unknown; lines?: unknown; sections?: unknown; decisions?: unknown; ackAllergy?: unknown };
-      try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверные данные запроса" }); }
-      const { patientId, docType, lines, sections, decisions, ackAllergy } = body;
-      if (typeof patientId !== "string" || typeof docType !== "string" || !Array.isArray(lines) || lines.length > MAX_LINES || !lines.every(isLine) ||
-          !Array.isArray(sections) || !sections.every(isSection) || !isDecisions(decisions) ||
-          !Array.isArray(ackAllergy) || !ackAllergy.every((n) => Number.isInteger(n)))
-        return send(res, 400, { error: "Неверные данные запроса" });
-
-      if (!canAccessPatient(actor, "document.sign", patientId)) {
-        log({ actor: user.id, action: "document.sign.denied", target: patientId });
-        return send(res, 403, { error: "Нет доступа к этому пациенту" });
+      if (isPost && !visitId && !action) {
+        if (!can(actor, "visit.edit")) return send(res, 403, { error: "Недостаточно прав" });
+        let body: { patientId?: unknown; docType?: unknown; demo?: unknown };
+        try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверные данные запроса" }); }
+        if (typeof body.patientId !== "string" || !isDocType(body.docType) || (body.demo !== undefined && typeof body.demo !== "boolean"))
+          return send(res, 400, { error: "Неверные данные запроса" });
+        if (!canAccessPatient(actor, "visit.edit", body.patientId) || !patients.some((p) => p.id === body.patientId)) {
+          log({ actor: user.id, action: "visit.denied", target: String(body.patientId).slice(0, 32) });
+          return send(res, 403, { error: "Нет доступа к этому пациенту" });
+        }
+        if (visits.countDrafts(user.id) >= MAX_OPEN_PER_USER) return send(res, 429, { error: "Слишком много незавершённых приёмов" });
+        const v = createVisit(user.id, body.patientId, body.docType, body.demo === true, new Date(now()).toISOString());
+        visits.save(v);
+        log({ actor: user.id, action: "visit.create", target: v.id, detail: { source: v.source, docType: v.docType } });
+        return send(res, 200, toView(v));
       }
-      const patient = patients.find((p) => p.id === patientId);
-      if (!patient) return send(res, 404, { error: "Пациент не найден" });
 
-      // Правила проверяются на сервере заново — данным клиента о «проверено» не доверяем.
-      const conflicts = findConflicts(patient.allergies, lines);
-      const blockers = signBlockers(sections, decisions, conflicts, ackAllergy as number[], () => true);
-      if (blockers.unchecked.length || blockers.allergy.length) {
-        log({ actor: user.id, action: "document.sign.blocked", target: patientId, detail: { unchecked: blockers.unchecked.length, allergy: blockers.allergy.length } });
-        return send(res, 409, { error: "Документ нельзя подписать: есть непроверенные факты или конфликт с аллергией", blockers });
+      if (visitId) {
+        const v = visits.get(visitId);
+        // Чужой приём выглядит так же, как несуществующий: чужие идентификаторы не перебрать.
+        if (!v || v.ownerId !== user.id) {
+          if (v) log({ actor: user.id, action: "visit.denied", target: visitId });
+          return send(res, 404, { error: "Приём не найден" });
+        }
+        const patient = patients.find((p) => p.id === v.patientId);
+        if (!patient || !canAccessPatient(actor, "visit.edit", v.patientId)) return send(res, 403, { error: "Нет доступа к этому пациенту" });
+        const iso = new Date(now()).toISOString();
+
+        if (req.method === "GET" && !action) {
+          log({ actor: user.id, action: "visit.read", target: v.id });
+          return send(res, 200, toView(v));
+        }
+        if (isPost && action) {
+          if (v.status === "signed") return send(res, 409, { error: "Документ уже подписан и не меняется" });
+          let body: Record<string, unknown> = {};
+          try { body = (await readJson(req)) as Record<string, unknown>; } catch { return send(res, 400, { error: "Неверные данные запроса" }); }
+          if (!body || typeof body !== "object") return send(res, 400, { error: "Неверные данные запроса" });
+
+          if (action === "transcript") {
+            if (v.source === "demo") return send(res, 409, { error: "Демо-разговор менять нельзя" });
+            const lines = parseLines(body.lines);
+            if (!lines) return send(res, 400, { error: "Неверные данные запроса" });
+            // Новая расшифровка делает прежний черновик и решения врача недействительными.
+            v.lines = lines; v.sections = null; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
+            visits.save(v);
+            log({ actor: user.id, action: "visit.transcript", target: v.id, detail: { lines: lines.length } });
+            return send(res, 200, toView(v));
+          }
+
+          if (action === "extract") {
+            if (!can(actor, "extract.run")) return send(res, 403, { error: "Недостаточно прав" });
+            if (v.source === "demo") return send(res, 409, { error: "В демо-приёме черновик уже готов" });
+            if (v.lines.length === 0) return send(res, 400, { error: "Нет текста для документа" });
+            if (!extractLimiter.allow(user.id)) return send(res, 429, { error: "Слишком много запросов, подождите минуту" });
+            log({ actor: user.id, action: "extract.request", target: v.id, detail: { lines: v.lines.length } });
+            try {
+              const sections = clampSections(await deps.extract(docs[v.docType].title, docs[v.docType].sections.map((x) => x.title), v.lines), v.lines);
+              v.sections = sections; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
+              visits.save(v);
+              return send(res, 200, toView(v));
+            } catch (e) {
+              console.error(e);
+              return send(res, 502, { error: e instanceof Error && e.message ? e.message : "Ошибка модели" });
+            }
+          }
+
+          if (action === "decisions") {
+            const err = applyChanges(v, patient, body.changes, body.ack, iso);
+            if (err) return send(res, 400, { error: err });
+            visits.save(v);
+            // В журнал — только вид действия и номер утверждения, без текста.
+            const n = Array.isArray(body.changes) ? body.changes.length : 0;
+            const k = Array.isArray(body.ack) ? body.ack.length : 0;
+            log({ actor: user.id, action: "visit.decision", target: v.id, detail: { changes: n, allergyAck: k } });
+            return send(res, 200, toView(v));
+          }
+
+          if (action === "sign") {
+            if (!canAccessPatient(actor, "document.sign", v.patientId)) {
+              log({ actor: user.id, action: "document.sign.denied", target: v.patientId });
+              return send(res, 403, { error: "Нет доступа к этому пациенту" });
+            }
+            if (!v.sections) return send(res, 409, { error: "Черновик ещё не составлен" });
+            // Правила проверяются по данным сервера, не по данным клиента.
+            const blockers = blockersFor(v, patient);
+            if (blockers.unchecked.length || blockers.allergy.length) {
+              log({ actor: user.id, action: "document.sign.blocked", target: v.patientId, detail: { unchecked: blockers.unchecked.length, allergy: blockers.allergy.length } });
+              return send(res, 409, { error: "Документ нельзя подписать: есть непроверенные факты или конфликт с аллергией", blockers });
+            }
+            const final = finalizeSections(v.sections, v.decisions);
+            const title = docs[v.docType].title;
+            const canonical = [title, patient.pin, ...final.flatMap((s) => [s.title, ...s.lines])].join("\n");
+            const hash = createHash("sha256").update(canonical).digest("hex");
+            v.signed = { hash, signature: deps.signer.sign(hash), signedAt: iso, signer: user.name, scheme: deps.signer.scheme, demo: deps.signer.demo };
+            v.status = "signed"; v.updatedAt = iso;
+            visits.save(v);
+            // В журнал — только идентификаторы и хэш, без текста документа.
+            log({ actor: user.id, action: "document.sign", target: v.patientId, detail: { visit: v.id, docType: title, hash, scheme: deps.signer.scheme } });
+            return send(res, 200, toView(v));
+          }
+        }
       }
-      const final = finalizeSections(sections, decisions);
-      const canonical = [docType, patient.pin, ...final.flatMap((s) => [s.title, ...s.lines])].join("\n");
-      const hash = createHash("sha256").update(canonical).digest("hex");
-      const signature = deps.signer.sign(hash);
-      const signedAt = new Date(now()).toISOString();
-      // В журнал — только идентификаторы и хэш, без текста документа.
-      log({ actor: user.id, action: "document.sign", target: patientId, detail: { docType, hash, scheme: deps.signer.scheme } });
-      return send(res, 200, { hash, signature, signedAt, signer: user.name, scheme: deps.signer.scheme, demo: deps.signer.demo });
     }
 
     return send(res, 404, { error: "Not found" });

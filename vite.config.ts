@@ -36,6 +36,8 @@ const cspMeta = (): Plugin => ({
 
 // Запуск для телефона в локальной сети (npm run dev:lan, scripts/dev-lan.ts): HTTPS с локальным сертификатом.
 // Без DEV_HTTPS=1 поведение прежнее — только этот компьютер, обычный http.
+// Адрес API можно переопределить (API_TARGET), чтобы поднять вторую копию рядом с основной.
+const apiTarget = process.env.API_TARGET ?? "http://127.0.0.1:8787";
 const lan = process.env.DEV_HTTPS === "1" && process.env.DEV_CERT_DIR && process.env.DEV_LAN_IP
   ? { dir: process.env.DEV_CERT_DIR, ip: process.env.DEV_LAN_IP }
   : null;
@@ -47,15 +49,15 @@ export default defineConfig({
         https: { key: readFileSync(join(lan.dir, "server.key")), cert: readFileSync(join(lan.dir, "server.crt")) },
         allowedHosts: [lan.ip, "localhost", "127.0.0.1"], // при HTTPS Vite эту проверку не применяет; подмену имени и так не пропустит сертификат (он выдан только на этот адрес)
         // changeOrigin: API видит обращение с 127.0.0.1:8787, а Origin проверяется по ALLOWED_ORIGINS.
-        proxy: { "/api": { target: "http://127.0.0.1:8787", changeOrigin: true } },
+        proxy: { "/api": { target: apiTarget, changeOrigin: true } },
       }
-    : { proxy: { "/api": "http://127.0.0.1:8787" } },
+    : { proxy: { "/api": { target: apiTarget, changeOrigin: true } } },
   preview: lan
     ? {
         headers,
         https: { key: readFileSync(join(lan.dir, "server.key")), cert: readFileSync(join(lan.dir, "server.crt")) },
         allowedHosts: [lan.ip, "localhost", "127.0.0.1"],
-        proxy: { "/api": { target: "http://127.0.0.1:8787", changeOrigin: true } },
+        proxy: { "/api": { target: apiTarget, changeOrigin: true } },
       }
-    : { headers, proxy: { "/api": "http://127.0.0.1:8787" } },
+    : { headers, proxy: { "/api": { target: apiTarget, changeOrigin: true } } },
 });

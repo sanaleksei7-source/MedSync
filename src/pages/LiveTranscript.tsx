@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { docs, type DocType, type Section } from "../data/script";
-import type { DraftSource } from "./Appointment";
+import { docs, type DocType } from "../data/script";
+import type { VisitView } from "../domain/visit";
 import { api, apiAudio, ApiError } from "../api";
 import { CAPTURE_RATE, captureSupported, startCapture, type Capture } from "../audio/capture";
 import { Segmenter, toInt16 } from "../audio/segmenter";
@@ -18,11 +18,13 @@ interface Row {
 }
 
 export default function LiveTranscript({
+  patientId,
   onBack,
   onDraft,
 }: {
+  patientId: string;
   onBack: () => void;
-  onDraft: (type: DocType, source: DraftSource) => void;
+  onDraft: (visit: VisitView) => void;
 }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [recording, setRecording] = useState(false);
@@ -102,14 +104,13 @@ export default function LiveTranscript({
       await queue.current; // дожидаемся последних сегментов
       const lines = rows.filter((r) => r.text.trim()).map((r) => ({ id: r.id, speaker: r.speaker, text: r.text.trim() }));
       if (lines.length === 0) throw new Error("Нет текста для документа");
-      const data = await api<{ sections?: Section[] }>("POST", "/api/extract", {
-        docTitle: docs[type].title,
-        sectionTitles: docs[type].sections.map((s) => s.title),
-        lines,
-      });
-      if (!data.sections) throw new Error("Не удалось составить документ");
-      if (data.sections.length === 0) throw new Error("В разговоре не нашлось фактов для этого документа");
-      onDraft(type, { lines, sections: data.sections });
+      // Расшифровку и черновик хранит сервер: сначала создаём приём, потом загружаем текст, потом просим составить документ.
+      const created = await api<VisitView>("POST", "/api/visits", { patientId, docType: type });
+      await api<VisitView>("POST", `/api/visits/${created.id}/transcript`, { lines });
+      const visit = await api<VisitView>("POST", `/api/visits/${created.id}/extract`, {});
+      if (!visit.sections) throw new Error("Не удалось составить документ");
+      if (visit.sections.length === 0) throw new Error("В разговоре не нашлось фактов для этого документа");
+      onDraft(visit);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка сети. Запущен ли сервер (npm run server)?");
     } finally {

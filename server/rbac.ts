@@ -1,10 +1,10 @@
 // Роли и доступ к пациентам. Доступ к карте даётся только врачу, за которым пациент закреплён
 // ("лечебные отношения"). Администратор и аудитор медицинских данных не видят.
 export type Role = "doctor" | "admin" | "auditor";
-export type Permission = "patient.read" | "document.sign" | "extract.run" | "asr.run" | "audit.verify" | "user.manage";
+export type Permission = "patient.read" | "visit.edit" | "document.sign" | "extract.run" | "asr.run" | "audit.verify" | "user.manage";
 
 const grants: Record<Role, Permission[]> = {
-  doctor: ["patient.read", "document.sign", "extract.run", "asr.run"],
+  doctor: ["patient.read", "visit.edit", "document.sign", "extract.run", "asr.run"],
   admin: ["user.manage"],
   auditor: ["audit.verify"],
 };

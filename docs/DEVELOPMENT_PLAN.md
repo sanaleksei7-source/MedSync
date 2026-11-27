@@ -25,7 +25,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 | 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 4 partly done (0.1 CI result unchecked, 0.4 one question open, 0.5 and 0.7 need the owner), 0.3 and 0.6 waiting on the owner |
 | 1 — Phone-ready web app | 🟡 In progress | 1 / 6 | 1.2 done; 1.1, 1.3, 1.4, 1.5 built and checked on this PC, each still needs a real phone; 1.6 (phone test) waits on the owner, checklist in `docs/PHONE_TEST_CHECKLIST.md`. Mobbin references were not used (connector not connected) |
 | 2 — Speech quality | 🟡 In progress | 1 / 8 | 2.1 done: bigger model is clearly better (18 % word errors, 4/10 drugs) but too slow on CPU (about 7× real time), so the GPU test (2.3) is now the key question. `docs/ASR_DESIGN.md` sections 9 and 9.1 |
-| 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
+| 3 — Real server foundation | 🟡 In progress | 1 / 7 | 3.1 done. Hosting choice (needed for 3.2) depends on a legal answer |
 | 4 — Native iPhone and Android apps | ⬜ Not started | 0 / 7 | Needs Stage 1; iPhone needs a Mac or cloud builder |
 | 5 — Legal-gated integrations | 🚫 Waiting | 0 / 5 | Needs lawyer, Минздрав and vendor answers |
 | 6 — Verification | ⬜ Not started | 0 / 8 | Mostly outside parties |
@@ -38,6 +38,7 @@ Evidence: 0.1 — all tests, the build and the secret scan passed before commit 
 | Date | Change |
 |---|---|
 | 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created. Owner's answers recorded: no Mac, phones over the internet, keep `dist/` |
+| 2026-11-27 | Step 3.1 done: visits (transcript, draft, decisions) held by the server; signing uses server data only; old client-text endpoints removed |
 | 2026-11-27 | Step 2.1 done: `large-v3-turbo` downloaded with the owner's OK (checksum verified) and tested on the 11 recordings; results in `docs/ASR_DESIGN.md` 9.1 |
 | 2026-11-26 | Step 1.6 prepared: phone test checklist written; waiting for the owner to run it |
 | 2026-11-26 | Step 1.5 built (installable web version, no data caching); phone check pending |
@@ -97,7 +98,7 @@ Closes the known limits listed in `docs/PHASE1_ARCHITECTURE.md` section 2. Depen
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 3.1 | Server holds the transcript, draft and the doctor's decisions; signing uses what the server holds, not what the client sends | Claude | Tests prove the client cannot alter signed text | ⬜ |
+| 3.1 | Server holds the transcript, draft and the doctor's decisions; signing uses what the server holds, not what the client sends | Claude | Tests prove the client cannot alter signed text | ✅ Done (in-memory store; the database comes in 3.2). Visits live on the server (`server/visits.ts`, `POST/GET /api/visits…`): transcript, draft and the doctor's decisions are stored there, and `/sign` takes no text from the client. The old `/api/sign` and `/api/extract` are removed. Tests (130 in `server/app.test.ts`): same server content gives the same hash whatever the client sends; forged "checked/acknowledged" claims are ignored; edits after signing are refused; other doctors get 404; invalid keys, actions and lines are rejected. Also checked in the browser against a throwaway server: block → resolve → sign, with decisions and the change log coming from the server. Not yet: resuming an open draft after a refresh, and moving the history from the browser to the server (3.3) |
 | 3.2 | Real database (PostgreSQL), encryption at rest, migrations, backups, restore drill | Claude, Ext for hosting | Restore tested from a backup | ⬜ |
 | 3.3 | Patients, history and drafts served from the server with access checks; remove patient data from the web bundle | Claude | No patient data in the app bundle | ⬜ |
 | 3.4 | Audit log to write-once storage, retention rules, alerts on unusual access | Claude, Ext for storage | Tamper test passes against external storage | ⬜ |

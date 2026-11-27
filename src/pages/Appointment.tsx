@@ -1,65 +1,81 @@
 import { useEffect, useRef, useState } from "react";
-import { docs, transcript as demoTranscript, type DocType, type Line, type Section } from "../data/script";
+import { docs, type DocType } from "../data/script";
 import { patients } from "../data/patients";
 import { formatPin } from "../data/pin";
 import { findConflicts } from "../data/allergy";
 import LiveTranscript from "./LiveTranscript";
 import { api, ApiError } from "../api";
 import { addEntry, updateEntry } from "../data/history";
-import { blockingConflicts, keyOf, uncheckedKeys, type Action, type Decision } from "../domain/rules";
+import { blockingConflicts, finalizeSections, keyOf, uncheckedKeys, type Action, type Decision } from "../domain/rules";
+import type { VisitView } from "../domain/visit";
 
 const patient = patients[0];
 const plural = (n: number) =>
   n % 10 === 1 && n % 100 !== 11 ? "факт" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "факта" : "фактов";
-interface LogEntry { time: string; action: Action; before: string; after?: string }
 const actionLabel: Record<Action, string> = { kept: "Оставлено", removed: "Убрано", edited: "Исправлено" };
 
-export interface DraftSource { lines: Line[]; sections: Section[] }
-
 export default function Appointment() {
-  const [docType, setDocType] = useState<DocType | null>(null);
   const [live, setLive] = useState(false);
-  const [draft, setDraft] = useState<{ type: DocType; source: DraftSource } | null>(null);
-  if (draft) return <Session key="live" type={draft.type} source={draft.source} onBack={() => setDraft(null)} />;
-  if (live) return <LiveTranscript onBack={() => setLive(false)} onDraft={(type, source) => setDraft({ type, source })} />;
-  if (!docType)
-    return (
-      <div className="space-y-4">
-        <h1 className="text-xl font-semibold">Какой документ оформить?</h1>
-        <p className="text-sm text-slate-600">Пациент: {patient.name}. Один и тот же разговор — разные документы.</p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {(Object.keys(docs) as DocType[]).map((t) => (
-            <button key={t} onClick={() => setDocType(t)} className="rounded bg-white p-4 text-left shadow-sm hover:ring-2 hover:ring-teal-500">
-              <div className="font-medium">{docs[t].label}</div>
-              <div className="text-sm text-slate-500">{docs[t].hint}</div>
-            </button>
-          ))}
-        </div>
-        <button onClick={() => setLive(true)} className="rounded border border-dashed border-slate-400 p-3 text-left text-sm text-slate-600 hover:bg-white">
-          🎙 Живая запись с микрофона (эксперимент)
-        </button>
+  const [visit, setVisit] = useState<VisitView | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Приём создаёт и хранит сервер; демо-разговор и шаблон документа сервер берёт сам.
+  const startDemo = async (docType: DocType) => {
+    setBusy(true);
+    setError("");
+    try {
+      setVisit(await api<VisitView>("POST", "/api/visits", { patientId: patient.id, docType, demo: true }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось начать приём");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (visit) return <Session key={visit.id} initial={visit} onBack={() => setVisit(null)} />;
+  if (live) return <LiveTranscript patientId={patient.id} onBack={() => setLive(false)} onDraft={setVisit} />;
+  return (
+    <div className="space-y-4">
+      <h1 className="text-xl font-semibold">Какой документ оформить?</h1>
+      <p className="text-sm text-slate-600">Пациент: {patient.name}. Один и тот же разговор — разные документы.</p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {(Object.keys(docs) as DocType[]).map((t) => (
+          <button key={t} disabled={busy} onClick={() => startDemo(t)} className="rounded bg-white p-4 text-left shadow-sm hover:ring-2 hover:ring-teal-500 disabled:opacity-50">
+            <div className="font-medium">{docs[t].label}</div>
+            <div className="text-sm text-slate-500">{docs[t].hint}</div>
+          </button>
+        ))}
       </div>
-    );
-  return <Session key={docType} type={docType} onBack={() => setDocType(null)} />;
+      <button onClick={() => setLive(true)} className="rounded border border-dashed border-slate-400 p-3 text-left text-sm text-slate-600 hover:bg-white">
+        🎙 Живая запись с микрофона (эксперимент)
+      </button>
+    </div>
+  );
 }
 
-function Session({ type, onBack, source }: { type: DocType; onBack: () => void; source?: DraftSource }) {
-  const transcript = source?.lines ?? demoTranscript;
-  const doc = source?.sections ?? docs[type].sections;
+function Session({ initial, onBack }: { initial: VisitView; onBack: () => void }) {
+  const [visit, setVisit] = useState(initial);
+  const type = visit.docType;
+  const transcript = visit.lines;
+  const doc = visit.sections ?? [];
+  const decisions = visit.decisions;
+  const log = visit.changeLog;
+  const sig = visit.signed;
+  const ackAllergy = visit.ackAllergy;
   const total = doc.reduce((n, s) => n + s.statements.length, 0);
-  const [stage, setStage] = useState<"review" | "signed" | "sent">("review");
-  const [sig, setSig] = useState<{ hash: string; time: string; scheme: string; signer: string } | null>(null);
+  const [sent, setSent] = useState(false);
   const [signError, setSignError] = useState("");
   const entryId = useRef(`h-${Date.now()}`);
-  const [shown, setShown] = useState(source ? source.lines.length : 0);
+  // В демо разговор «идёт»: реплики появляются по одной. В живом приёме всё уже расшифровано.
+  const [shown, setShown] = useState(visit.source === "demo" ? 0 : visit.lines.length);
   const [hot, setHot] = useState<number[]>([]);
-  const [decisions, setDecisions] = useState<Record<string, Decision>>({});
-  const [log, setLog] = useState<LogEntry[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [warn, setWarn] = useState(false);
-  const [ackAllergy, setAckAllergy] = useState<number[]>([]);
   const [allergyWarn, setAllergyWarn] = useState(false);
+  const [busy, setBusy] = useState(false);
   const lineRefs = useRef<Record<number, HTMLLIElement | null>>({});
   const stmtRefs = useRef<Record<string, HTMLLIElement | null>>({});
 
@@ -83,32 +99,36 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
         .filter(({ st, k }) => st.sourceIds.includes(lineId) && decisions[k]?.action !== "removed"),
     );
   const blocking = blockingConflicts(doc, decisions, conflicts, ackAllergy);
-  const pct = Math.round((filled / total) * 100);
+  const pct = total ? Math.round((filled / total) * 100) : 0;
 
-  const decide = (k: string, before: string, d: Decision) => {
-    setDecisions((m) => ({ ...m, [k]: d }));
-    setLog((l) => [
-      ...l,
-      { time: new Date().toLocaleTimeString("ru-RU"), action: d.action, before, after: d.text },
-    ]);
-    setEditing(null);
-    setWarn(false);
+  // Решения врача сохраняются на сервере; экран всегда показывает то, что вернул сервер.
+  const send = async (path: "decisions" | "sign", body: unknown) => {
+    setBusy(true);
+    setSignError("");
+    try {
+      const v = await api<VisitView>("POST", `/api/visits/${visit.id}/${path}`, body);
+      setVisit(v);
+      return v;
+    } catch (e) {
+      setSignError(e instanceof ApiError ? e.message : "Не удалось сохранить");
+      return null;
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const logNow = (action: Action, before: string, after?: string) =>
-    setLog((l) => [...l, { time: new Date().toLocaleTimeString("ru-RU"), action, before, after }]);
-
-  const ackConflict = (lineId: number, drug: string) => {
-    setAckAllergy((a) => [...a, lineId]);
-    setAllergyWarn(false);
-    logNow("kept", `Назначение «${drug}» при аллергии — подтверждено врачом`);
+  const decide = async (k: string, _before: string, d: Decision) => {
+    const v = await send("decisions", { changes: [{ key: k, action: d.action, ...(d.text !== undefined ? { text: d.text } : {}) }] });
+    if (v) { setEditing(null); setWarn(false); }
   };
 
-  const removeConflict = (lineId: number) => {
+  const ackConflict = async (lineId: number) => {
+    if (await send("decisions", { ack: [lineId] })) setAllergyWarn(false);
+  };
+
+  const removeConflict = async (lineId: number) => {
     const items = citing(lineId);
-    setDecisions((m) => ({ ...m, ...Object.fromEntries(items.map(({ k }) => [k, { action: "removed" as Action }])) }));
-    items.forEach(({ st }) => logNow("removed", st.text));
-    setAllergyWarn(false);
+    if (items.length && (await send("decisions", { changes: items.map(({ k }) => ({ key: k, action: "removed" as Action })) }))) setAllergyWarn(false);
   };
 
   const focusLine = (ids: number[]) => {
@@ -116,15 +136,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
     if (ids.length) lineRefs.current[ids[0]]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
 
-  const finalSections = doc
-    .map((sec, si) => ({
-      title: sec.title,
-      lines: sec.statements
-        .map((st, i) => ({ st, d: decisions[keyOf(si, i)] }))
-        .filter(({ st, d }) => isVisible(st.sourceIds) && d?.action !== "removed")
-        .map(({ st, d }) => d?.text ?? st.text),
-    }))
-    .filter((s) => s.lines.length);
+  const finalSections = finalizeSections(doc, decisions, isVisible);
 
   const sign = async () => {
     if (blocking.length) {
@@ -136,24 +148,9 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
       stmtRefs.current[unchecked[0]]?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
-    setSignError("");
-    try {
-      const r = await api<{ hash: string; signedAt: string; scheme: string; signer: string }>("POST", "/api/sign", {
-        patientId: patient.id,
-        docType: docs[type].title,
-        lines: transcript,
-        sections: doc,
-        decisions,
-        ackAllergy: ackAllergy,
-      });
-      setSig({ hash: r.hash, time: new Date(r.signedAt).toLocaleString("ru-RU"), scheme: r.scheme, signer: r.signer });
-      addEntry({ id: entryId.current, patientName: patient.name, time: r.signedAt, docLabel: docs[type].label, status: "signed", hash: r.hash });
-    } catch (e) {
-      // Сервер перепроверил правила и отказал — показываем причину, документ не подписан.
-      setSignError(e instanceof ApiError ? e.message : "Не удалось подписать документ");
-      return;
-    }
-    setStage("signed");
+    // Сервер сам перепроверяет правила и подписывает то, что хранит; от клиента приходит только команда.
+    const v = await send("sign", {});
+    if (v?.signed) addEntry({ id: entryId.current, patientName: patient.name, time: v.signed.signedAt, docLabel: docs[type].label, status: "signed", hash: v.signed.hash });
   };
 
   const changeLog = (
@@ -165,7 +162,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
         <ul className="space-y-1">
           {log.map((e, i) => (
             <li key={i}>
-              <span className="text-slate-400">{e.time}</span> · <b>{actionLabel[e.action]}</b>: «{e.before}»
+              <span className="text-slate-400">{new Date(e.time).toLocaleTimeString("ru-RU")}</span> · <b>{actionLabel[e.action]}</b>: «{e.before}»
               {e.after !== undefined && <> → «{e.after}»</>}
             </li>
           ))}
@@ -174,7 +171,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
     </div>
   );
 
-  if (stage !== "review")
+  if (visit.status === "signed")
     return (
       <div className="space-y-4">
         <article className="rounded bg-white p-4 shadow-sm md:p-6 print:shadow-none">
@@ -192,13 +189,13 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
             <div className="font-medium text-teal-700">Подписано (демо — НЕ электронная цифровая подпись, юридической силы не имеет)</div>
             <div>Врач: {sig?.signer}</div>
             <div>Схема: {sig?.scheme}</div>
-            <div>Время: {sig?.time}</div>
+            <div>Время: {sig ? new Date(sig.signedAt).toLocaleString("ru-RU") : ""}</div>
             <div className="break-all font-mono">SHA-256: {sig?.hash}</div>
           </div>
         </article>
-        {stage === "signed" ? (
+        {!sent ? (
           <div className="flex flex-col gap-2 sm:flex-row print:hidden">
-            <button onClick={() => { updateEntry(entryId.current, { status: "sent" }); setStage("sent"); }} className="rounded bg-teal-600 px-4 py-3 text-sm text-white sm:py-2">Отправить в медкарту</button>
+            <button onClick={() => { updateEntry(entryId.current, { status: "sent" }); setSent(true); }} className="rounded bg-teal-600 px-4 py-3 text-sm text-white sm:py-2">Отправить в медкарту</button>
             <button onClick={() => window.print()} className="rounded border px-4 py-3 text-sm sm:py-2">Печать / PDF</button>
           </div>
         ) : (
@@ -235,7 +232,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
             {open ? (
               <span className="mt-2 flex flex-wrap gap-2 md:ml-2 md:mt-0 md:inline-flex md:gap-1">
                 <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => removeConflict(c.lineId)}>Убрать назначение</button>
-                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => ackConflict(c.lineId, c.drug)}>Назначение проверено, оставить</button>
+                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => ackConflict(c.lineId)}>Назначение проверено, оставить</button>
               </span>
             ) : (
               <span className="ml-2 text-xs text-red-700">решено врачом (см. журнал)</span>
@@ -333,7 +330,7 @@ function Session({ type, onBack, source }: { type: DocType; onBack: () => void; 
           {allergyWarn && <p className="mb-1 text-sm text-red-600">Сначала решите вопрос с аллергией</p>}
           {warn && <p className="mb-1 text-sm text-red-600">Сначала проверьте жёлтые факты</p>}
           <button
-            disabled={pct < 100}
+            disabled={pct < 100 || busy}
             onClick={sign}
             className="sticky bottom-20 z-10 mt-2 w-full rounded bg-teal-600 px-4 py-3 text-sm text-white shadow-lg disabled:opacity-40 md:static md:w-auto md:py-2 md:shadow-none"
           >
