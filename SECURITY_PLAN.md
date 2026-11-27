@@ -8,7 +8,7 @@ Goal: bring MedSync from a fictional-data demo to a system that can be used with
 
 ## Progress tracker
 
-**Last updated:** 2026-11-24 · **Overall:** Phase 0 in progress. No real-data release gate (§5) is met yet.
+**Last updated:** 2026-11-27 · **Overall:** Phase 0 in progress. No real-data release gate (§5) is met yet.
 
 Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 blocked (needs someone outside development)
 

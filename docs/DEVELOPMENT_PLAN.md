@@ -16,14 +16,14 @@ Built and tested on fictional data: login with a second factor, roles and patien
 
 ## Progress tracker
 
-**Last updated:** 2026-11-26 · **Overall:** Stage 0 in progress; nothing in Stages 1–8 started yet except the speech measurements noted below.
+**Last updated:** 2026-11-27 · **Overall:** Stages 0, 1 and 2 are open at the same time. Stage 1 is built except the real-phone test (waiting on the owner); Stage 2 has the larger-model test done and needs a GPU machine; Stages 3–8 not started.
 
 Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the owner or an outside party
 
 | Stage | Status | Steps done / total | Notes |
 |---|---|---|---|
 | 0 — Housekeeping and decisions | 🟡 In progress | 2 / 8 | 4 partly done (0.1 CI result unchecked, 0.4 one question open, 0.5 and 0.7 need the owner), 0.3 and 0.6 waiting on the owner |
-| 1 — Phone-ready web app | 🟡 In progress | 1 / 6 | 1.1 built, checked at 375 px with a stubbed login; needs a real-phone look (1.6). Mobbin references were not used (connector not connected) |
+| 1 — Phone-ready web app | 🟡 In progress | 1 / 6 | 1.2 done; 1.1, 1.3, 1.4, 1.5 built and checked on this PC, each still needs a real phone; 1.6 (phone test) waits on the owner, checklist in `docs/PHONE_TEST_CHECKLIST.md`. Mobbin references were not used (connector not connected) |
 | 2 — Speech quality | 🟡 In progress | 1 / 8 | 2.1 done: bigger model is clearly better (18 % word errors, 4/10 drugs) but too slow on CPU (about 7× real time), so the GPU test (2.3) is now the key question. `docs/ASR_DESIGN.md` sections 9 and 9.1 |
 | 3 — Real server foundation | ⬜ Not started | 0 / 7 | Hosting choice depends on a legal answer |
 | 4 — Native iPhone and Android apps | ⬜ Not started | 0 / 7 | Needs Stage 1; iPhone needs a Mac or cloud builder |
