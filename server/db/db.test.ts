@@ -2,6 +2,8 @@
 // Используется настоящий PostgreSQL внутри Node (PGlite), без внешнего сервера.
 import { isDeepStrictEqual } from "node:util";
 import { patients } from "../patients";
+import { anchorOf, appendRecord, checkAnchor, retentionReport, verifyChain, type AuditRecord } from "../audit";
+import { AuditWriter, appendAuditRow, importAudit, loadAudit } from "./audit-store";
 import { VersionConflictError, createVisit, type Visit } from "../visits";
 import { exportBackup, parseBackup, restoreBackup, serializeBackup, verifyDatabase, type BackupFile } from "./backup";
 import { decrypt, encrypt, newKey, parseKeyring } from "./crypto";
@@ -172,6 +174,86 @@ const forged = enc(ring, JSON.stringify({ lines: tampered.lines, sections: tampe
 await target.query("UPDATE visits SET payload=$2, key_id=$3 WHERE id=$1", [real.id, forged.blob, forged.keyId]);
 const caught = await verifyDatabase(target, ring, patients);
 check("the check catches a signed document whose text no longer matches its hash", caught.problems.length === 1 && caught.problems[0].includes("не соответствует подписанному хэшу"));
+
+
+// --- журнал аудита в базе (шаг 3.4) ---
+const adb = await openPglite();
+await migrate(adb);
+const chain: AuditRecord[] = [];
+const ev = (i: number, extra: Partial<{ actor: string; detail: Record<string, string | number | boolean> }> = {}) => ({ time: `2026-11-27T10:00:0${i}.000Z`, actor: extra.actor ?? "doc1", action: "visit.read", target: `t${i}`, detail: extra.detail ?? { z: 1, a: i } });
+for (let i = 0; i < 4; i++) appendRecord(chain, ev(i));
+for (const r of chain) await appendAuditRow(adb, r);
+const loaded = await loadAudit(adb);
+check("audit rows round-trip exactly (detail key order and time text kept, so the hashes still verify)", isDeepStrictEqual(loaded, chain) && verifyChain(loaded).ok);
+check("audit rows cannot be updated, even directly in SQL", await throws(() => adb.query("UPDATE audit_log SET actor='x' WHERE seq=2")));
+check("audit rows cannot be deleted", await throws(() => adb.query("DELETE FROM audit_log WHERE seq=4")));
+check("audit table cannot be truncated", await throws(() => adb.query("TRUNCATE audit_log")));
+check("a record that does not continue the chain is refused (wrong previous hash)", await throws(() => appendAuditRow(adb, { ...ev(5), seq: 5, prevHash: "1".repeat(64), hash: "2".repeat(64) })));
+check("a record with a gap in numbering is refused", await throws(() => appendAuditRow(adb, { ...ev(5), seq: 7, prevHash: chain[3].hash, hash: "2".repeat(64) })));
+check("a duplicate sequence number is refused", await throws(() => appendAuditRow(adb, chain[3])));
+check("after all the tampering attempts the stored chain is intact", isDeepStrictEqual(await loadAudit(adb), chain));
+
+const w = new AuditWriter(adb);
+const more: AuditRecord[] = [...chain];
+for (let i = 4; i < 12; i++) w.write(appendRecord(more, ev(i % 10)));
+await w.flush();
+check("queued writes land in order", isDeepStrictEqual(await loadAudit(adb), more) && w.failed === null);
+const out = appendRecord([...more], ev(0));
+const w2 = new AuditWriter(adb);
+w2.write({ ...out, seq: out.seq + 3 }).catch(() => {}); // дыра в нумерации
+await w2.flush();
+check("a failed write marks the writer as failed and later writes are skipped", w2.failed !== null && (await loadAudit(adb)).length === more.length);
+
+check("importing a broken file chain is refused", await (async () => { const d = await openPglite(); await migrate(d); const bad = chain.map((r) => ({ ...r })); bad[1].actor = "evil"; const r = await throws(() => importAudit(d, bad)); await d.close(); return r; })());
+check("importing a good file chain fills an empty table, and not a second time", await (async () => { const d = await openPglite(); await migrate(d); const n = await importAudit(d, chain); const again = await throws(() => importAudit(d, chain)); const same = isDeepStrictEqual(await loadAudit(d), chain); await d.close(); return n === chain.length && again && same; })());
+
+const anchor = anchorOf(chain)!;
+check("an anchor matches the log it was taken from, and a longer log", checkAnchor(chain, anchor).ok && checkAnchor(more, anchor).ok);
+check("an anchor detects a truncated log", !checkAnchor(chain.slice(0, 2), anchor).ok);
+check("an anchor detects a log rewritten with a fresh valid chain", await (async () => {
+  const forgedChain: AuditRecord[] = [];
+  for (let i = 0; i < 4; i++) appendRecord(forgedChain, ev(i, { actor: "someone-else" }));
+  return verifyChain(forgedChain).ok && !checkAnchor(forgedChain, anchor).ok;
+})());
+check("retention report counts records older than the period and never deletes", (() => {
+  const r = retentionReport(chain, new Date("2032-01-01T00:00:00Z"), 5);
+  return r.pastRetention === 4 && r.oldest === chain[0].time && retentionReport(chain, new Date("2028-01-01T00:00:00Z"), 5).pastRetention === 0;
+})());
+
+// копия содержит журнал и восстанавливает его; проверка видит нарушенный журнал
+check("backup carries the audit log and restore brings it back", await (async () => {
+  const b = await exportBackup(adb);
+  const d = await openPglite();
+  await restoreBackup(d, parseBackup(serializeBackup(b)));
+  const same = isDeepStrictEqual(await loadAudit(d), more);
+  const v = await verifyDatabase(d, ring, patients);
+  await d.close();
+  return same && v.problems.length === 0;
+})());
+check("restore refuses a backup whose audit chain was altered", await (async () => {
+  const b = await exportBackup(adb);
+  const bad = JSON.parse(JSON.stringify(b)) as BackupFile;
+  bad.audit![2].actor = "evil";
+  const { sha256: _drop, ...body } = bad;
+  const { createHash } = await import("node:crypto");
+  bad.sha256 = createHash("sha256").update(JSON.stringify(body)).digest("hex"); // контрольная сумма пересчитана, цепочка нет
+  const d = await openPglite();
+  const r = await throws(() => restoreBackup(d, parseBackup(JSON.stringify(bad))));
+  await d.close();
+  return r;
+})());
+check("backups made before step 3.4 (no audit field) still restore", await (async () => {
+  const b = await exportBackup(src);
+  const old = JSON.parse(JSON.stringify(b)) as Record<string, unknown>;
+  delete old.audit; delete old.sha256;
+  const { createHash } = await import("node:crypto");
+  old.sha256 = createHash("sha256").update(JSON.stringify(old)).digest("hex");
+  const d = await openPglite();
+  const r = await restoreBackup(d, parseBackup(JSON.stringify(old)));
+  await d.close();
+  return r.visits === b.visits.length;
+})());
+await adb.close();
 
 for (const d of [fresh, db, src, target, partial] as Db[]) await d.close();
 

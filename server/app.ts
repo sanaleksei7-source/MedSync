@@ -2,6 +2,7 @@ import http from "node:http";
 import { RateLimiter, hostAllowed, isJson, originAllowed } from "./guards";
 import { LoginThrottle, SessionStore, TokenStore, verifyPassword, verifyTotp } from "./auth";
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
+import { AlertMonitor, isAlert, type Alert } from "./alerts";
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
@@ -28,7 +29,11 @@ export interface Deps {
   throttle: LoginThrottle;
   signer: Signer;
   audit: AuditRecord[];
-  persistAudit: (r: AuditRecord) => void;
+  /** Запись в постоянное хранилище. Если вернул Promise, записи идут по очереди, а при сбое сервер отказывает в запросах. */
+  persistAudit: (r: AuditRecord) => void | Promise<void>;
+  /** Куда ещё сообщить о тревоге (почта, мессенджер); сама тревога в любом случае попадает в журнал. */
+  onAlert?: (a: Alert) => void;
+  alerts?: AlertMonitor;
   ipLimitPerMinute?: number;
   loginLimitPerMinute?: number; // по умолчанию 20 с одного адреса
 
@@ -99,12 +104,31 @@ export function createHandler(deps: Deps) {
   const extractLimiter = new RateLimiter(10, 60_000);
   const asrLimiter = new RateLimiter(60, 60_000); // сегмент речи ≈ 5–25 с, 60 в минуту хватает с запасом
 
+  // Журнал пишется по очереди; если запись не удалась, действия без следа в журнале не допускаются (503).
+  let auditQueue: Promise<void> = Promise.resolve();
+  let auditFailed = false;
+  const monitor = deps.alerts ?? new AlertMonitor();
+  const append = (e: AuditEvent) => {
+    const rec = appendRecord(deps.audit, e);
+    auditQueue = auditQueue.then(() => (auditFailed ? undefined : deps.persistAudit(rec))).catch((err) => {
+      auditFailed = true;
+      console.error("Журнал аудита не записан, сервер остановил обслуживание:", err instanceof Error ? err.message : err);
+    });
+    return rec;
+  };
   const log = (e: Omit<AuditEvent, "time">) => {
-    const rec = appendRecord(deps.audit, { time: new Date(now()).toISOString(), ...e });
-    deps.persistAudit(rec);
+    const ev = { time: new Date(now()).toISOString(), ...e };
+    append(ev);
+    for (const a of monitor.observe(ev)) {
+      append({ time: ev.time, actor: "system", action: `alert.${a.rule}`, target: a.key, detail: { count: a.count } });
+      console.warn(`ТРЕВОГА [${a.rule}] ${a.key}: ${a.message}`);
+      deps.onAlert?.(a);
+    }
   };
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    await auditQueue;
+    if (auditFailed) return send(res, 503, { error: "Журнал аудита недоступен, работа остановлена" });
     const url = (req.url ?? "").split("?")[0];
     const host = req.headers.host;
     if (!(deps.allowedHosts ? deps.allowedHosts.includes(host ?? "") : hostAllowed(host))) return send(res, 403, { error: "Forbidden" });
@@ -221,6 +245,12 @@ export function createHandler(deps: Deps) {
       if (!can(actor, "audit.verify")) return send(res, 403, { error: "Недостаточно прав" });
       log({ actor: user.id, action: "audit.verify" });
       return send(res, 200, verifyChain(deps.audit));
+    }
+    if (req.method === "GET" && url === "/api/audit/alerts") {
+      if (!can(actor, "audit.verify")) return send(res, 403, { error: "Недостаточно прав" });
+      log({ actor: user.id, action: "audit.alerts" });
+      const list = deps.audit.filter(isAlert).slice(-100).reverse().map((r) => ({ time: r.time, rule: r.action.slice(6), key: r.target ?? "", count: Number(r.detail?.count ?? 0) }));
+      return send(res, 200, { alerts: list });
     }
 
     if (isPost && url === "/api/asr") {

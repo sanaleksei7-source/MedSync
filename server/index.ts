@@ -1,9 +1,9 @@
 import http from "node:http";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import Anthropic from "@anthropic-ai/sdk";
 import { createHandler, type UserRecord } from "./app";
 import { LoginThrottle, SessionStore, TokenStore, hashPassword } from "./auth";
-import { parseLines, toLine, type AuditRecord } from "./audit";
+import { parseLines, verifyChain } from "./audit";
 import { DEFAULT_ORIGINS } from "./guards";
 import { extractDraft } from "./llm";
 import { DemoSigner } from "./signer";
@@ -12,6 +12,7 @@ import { parseKeyring } from "./db/crypto";
 import { openFromEnv } from "./db/db";
 import { migrate } from "./db/migrate";
 import { PgVisitStore } from "./db/visit-store";
+import { AuditWriter, importAudit, loadAudit } from "./db/audit-store";
 
 const USERS_FILE = "data/users.json";
 const AUDIT_FILE = "data/audit.log";
@@ -21,7 +22,6 @@ if (!existsSync(USERS_FILE)) {
   process.exit(1);
 }
 const users = JSON.parse(readFileSync(USERS_FILE, "utf-8")) as UserRecord[];
-const audit: AuditRecord[] = existsSync(AUDIT_FILE) ? parseLines(readFileSync(AUDIT_FILE, "utf-8")) : [];
 
 // Ключ читается из переменной окружения ANTHROPIC_API_KEY (файл .env, не коммитится).
 const client = new Anthropic();
@@ -34,6 +34,20 @@ const applied = await migrate(db);
 if (applied.length) console.log("Применены миграции базы:", applied.join(", "));
 console.log(`База данных: ${db.engine}`);
 
+// Журнал аудита лежит в таблице, которая только дописывается. Прежний файл data/audit.log один раз переносится в неё.
+let audit = await loadAudit(db);
+if (audit.length === 0 && existsSync(AUDIT_FILE)) {
+  const n = await importAudit(db, parseLines(readFileSync(AUDIT_FILE, "utf-8")));
+  console.log(`Журнал аудита перенесён из ${AUDIT_FILE} в базу: ${n} записей (файл оставлен как есть).`);
+  audit = await loadAudit(db);
+}
+const chainCheck = verifyChain(audit);
+if (!chainCheck.ok) {
+  console.error(`Журнал аудита в базе нарушен (запись ${chainCheck.brokenAt}): ${chainCheck.reason}. Сервер не запущен.`);
+  process.exit(1);
+}
+const auditWriter = new AuditWriter(db);
+
 const handler = createHandler({
   users,
   sessions: new SessionStore(),
@@ -44,7 +58,7 @@ const handler = createHandler({
   signer: new DemoSigner(process.env.SIGNING_DEMO_KEY),
   audit,
   asr,
-  persistAudit: (r) => appendFileSync(AUDIT_FILE, toLine(r)),
+  persistAudit: auditWriter.write,
   extract: (docTitle, sectionTitles, lines) => {
     if (!process.env.ANTHROPIC_API_KEY)
       throw new Error("Не задан ANTHROPIC_API_KEY. Создайте файл .env (см. README) и перезапустите сервер.");

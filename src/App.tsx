@@ -14,8 +14,20 @@ const tabs = [
 ] as const;
 type Tab = (typeof tabs)[number]["id"];
 
+const alertLabel: Record<string, string> = {
+  "denied.burst": "Много отказов в доступе",
+  "login.fail.burst": "Подбор пароля",
+  "token.reuse": "Повторное использование токена",
+  "read.burst": "Массовое чтение карт",
+  "off.hours": "Работа ночью",
+};
+
 function AuditPanel() {
   const [result, setResult] = useState("");
+  const [alerts, setAlerts] = useState<{ time: string; rule: string; key: string; count: number }[] | null>(null);
+  useEffect(() => {
+    api<{ alerts: { time: string; rule: string; key: string; count: number }[] }>("GET", "/api/audit/alerts").then((r) => setAlerts(r.alerts), () => setAlerts([]));
+  }, []);
   const verify = async () => {
     try {
       const r = await api<{ ok: boolean; count?: number; brokenAt?: number; reason?: string }>("GET", "/api/audit/verify");
@@ -29,6 +41,16 @@ function AuditPanel() {
       <p className="text-slate-700">Эта роль не видит медицинских данных.</p>
       <button onClick={verify} className="rounded border px-3 py-1.5 text-sm">Проверить целостность журнала аудита</button>
       {result && <p className="text-sm">{result}</p>}
+      <section className="rounded bg-white p-4 text-sm shadow-sm">
+        <h2 className="mb-2 font-medium">Тревоги о необычном доступе</h2>
+        {alerts === null ? <p className="text-slate-500">Загрузка…</p> : alerts.length === 0 ? <p className="text-slate-500">Тревог нет.</p> : (
+          <ul className="space-y-1">
+            {alerts.map((a, i) => (
+              <li key={i}><span className="text-slate-400">{new Date(a.time).toLocaleString("ru-RU")}</span> · <b>{alertLabel[a.rule] ?? a.rule}</b> · {a.key}{a.count > 1 ? ` (${a.count})` : ""}</li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

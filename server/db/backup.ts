@@ -3,7 +3,9 @@
 // Ключи (DATA_KEYS) в копию НЕ входят и хранятся отдельно: копия без ключа бесполезна, ключ без копии тоже.
 import { createHash } from "node:crypto";
 import type { Patient } from "../../src/domain/patient";
+import { verifyChain, type AuditRecord } from "../audit";
 import { documentHash } from "../visits";
+import { appendAuditRow, loadAudit } from "./audit-store";
 import type { Keyring } from "./crypto";
 import type { Db, Queryable } from "./db";
 import { loadMigrations, migrate } from "./migrate";
@@ -20,6 +22,8 @@ export interface BackupBody {
   engine: string;
   migrations: { name: string; sha256: string }[];
   visits: BackupRow[];
+  /** Журнал аудита (копии, сделанные до шага 3.4, его не содержат). */
+  audit?: AuditRecord[];
 }
 export interface BackupFile extends BackupBody { sha256: string }
 
@@ -33,6 +37,7 @@ export async function exportBackup(db: Db, now = new Date()): Promise<BackupFile
     createdAt: now.toISOString(),
     engine: db.engine,
     migrations,
+    audit: await loadAudit(db),
     visits: rows.map((r) => ({
       id: r.id, owner_id: r.owner_id, patient_id: r.patient_id, doc_type: r.doc_type, source: r.source, status: r.status, version: r.version,
       created_at: new Date(r.created_at).toISOString(), updated_at: new Date(r.updated_at).toISOString(),
@@ -62,10 +67,16 @@ export async function restoreBackup(db: Db, backup: BackupFile): Promise<Restore
   for (const m of backup.migrations) {
     if (known.get(m.name) !== m.sha256) throw new Error(`Копия сделана другой версией схемы (${m.name}). Обновите программу до версии, создавшей копию.`);
   }
+  if (backup.audit) {
+    const v = verifyChain(backup.audit);
+    if (!v.ok) throw new Error(`Журнал аудита в копии нарушен (запись ${v.brokenAt}): ${v.reason}`);
+  }
   await migrate(db);
   const existing = await db.query<{ n: string | number }>("SELECT count(*) AS n FROM visits");
   if (Number(existing.rows[0].n) !== 0) throw new Error("База не пуста: восстановление возможно только в пустую базу");
+  if (backup.audit?.length && (await loadAudit(db)).length !== 0) throw new Error("Журнал аудита в базе не пуст: восстановление возможно только в пустую базу");
   await db.transaction(async (tx: Queryable) => {
+    for (const r of backup.audit ?? []) await appendAuditRow(tx, r);
     for (const r of backup.visits) {
       await tx.query(
         `INSERT INTO visits (id, owner_id, patient_id, doc_type, source, status, version, created_at, updated_at, signed_hash, key_id, payload)
@@ -104,5 +115,7 @@ export async function verifyDatabase(db: Db, ring: Keyring, patients: Patient[])
       problems.push(`${r.id}: ${e instanceof Error ? e.message : "ошибка"}`);
     }
   }
+  const chain = verifyChain(await loadAudit(db));
+  if (!chain.ok) problems.push(`журнал аудита, запись ${chain.brokenAt}: ${chain.reason}`);
   return { visits: rows.length, signed, problems };
 }

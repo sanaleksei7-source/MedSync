@@ -53,3 +53,27 @@ export function verifyChain(chain: AuditRecord[]): VerifyResult {
 export const toLine = (r: AuditRecord) => JSON.stringify(r) + "\n";
 export const parseLines = (text: string): AuditRecord[] =>
   text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as AuditRecord);
+
+/**
+ * Якорь — «отпечаток» журнала на момент времени (номер и хэш последней записи). Его кладут во внешнее хранилище, где
+ * запись нельзя изменить (шаг 3.7 и хостинг). Если журнал потом урезали или переписали целиком вместе с цепочкой, якорь это покажет.
+ */
+export interface Anchor { seq: number; hash: string; time: string }
+
+export const anchorOf = (chain: AuditRecord[], now = new Date()): Anchor | null => {
+  const last = chain[chain.length - 1];
+  return last ? { seq: last.seq, hash: last.hash, time: now.toISOString() } : null;
+};
+
+export function checkAnchor(chain: AuditRecord[], a: Anchor): { ok: true } | { ok: false; reason: string } {
+  if (chain.length < a.seq) return { ok: false, reason: `журнал короче якоря: в нём ${chain.length} записей, якорь на ${a.seq} (записи вырезаны)` };
+  if (chain[a.seq - 1].hash !== a.hash) return { ok: false, reason: `запись ${a.seq} не совпадает с якорем (журнал переписан)` };
+  return { ok: true };
+}
+
+/** Срок хранения записей журнала. Сами записи автоматически не удаляются: таблица только дописывается. */
+export function retentionReport(chain: AuditRecord[], now: Date, years: number): { oldest: string | null; pastRetention: number } {
+  const cutoff = new Date(now);
+  cutoff.setUTCFullYear(cutoff.getUTCFullYear() - years);
+  return { oldest: chain[0]?.time ?? null, pastRetention: chain.filter((r) => Date.parse(r.time) < cutoff.getTime()).length };
+}

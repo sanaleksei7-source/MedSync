@@ -28,6 +28,7 @@ const users = [
 const pgDb = process.argv.includes("--pglite") ? await openPglite() : null;
 if (pgDb) await migrate(pgDb);
 const audit: AuditRecord[] = [];
+let auditDown = false;
 let extractCalls = 0;
 let extractResult: { title: string; statements: { text: string; sourceIds: number[] }[] }[] = [];
 let extractFails = false;
@@ -51,7 +52,7 @@ const deps: Parameters<typeof createHandler>[0] = {
   throttle,
   signer: new DemoSigner("test-key"),
   audit,
-  persistAudit: () => {},
+  persistAudit: async () => { if (auditDown) throw new Error("disk full"); },
   extract: async () => { extractCalls++; if (extractFails) throw new Error("model down"); return structuredClone(extractResult); },
   allowedOrigins: ["http://localhost:5173"],
   allowedHosts: [`127.0.0.1:${port}`],
@@ -390,10 +391,28 @@ check("refresh needs X-Requested-With", (await call("POST", "/api/token/refresh"
 const tokenDump = JSON.stringify(audit);
 check("audit records app logins but no tokens", audit.some((r) => r.action === "login.ok" && r.detail?.client === "app") && ![al, rf, t1, t2].some((x) => x.body?.accessToken && tokenDump.includes(x.body.accessToken)));
 
+// --- оповещения о необычном доступе (шаг 3.4) ---
+const docA = await login("doc1", secrets.doc);
+const audA = await login("aud1", secrets.aud);
+for (let i = 0; i < 6; i++) await post(docA, "/api/visits", { patientId: "p3", docType: "osmotr" }); // чужой пациент: отказы
+const al0 = await call("GET", "/api/audit/alerts", { cookie: audA });
+check("repeated denials raise an alert the auditor can read", al0.status === 200 && al0.body.alerts.some((a: { rule: string; key: string }) => a.rule === "denied.burst" && a.key === "doc1"));
+check("the alert is written to the audit log by the system", audit.some((r) => r.action === "alert.denied.burst" && r.actor === "system" && r.target === "doc1"));
+check("alerts carry no names or medical text", !JSON.stringify(al0.body).includes("Иванова") && !JSON.stringify(al0.body).includes("Боль"));
+check("doctor cannot read alerts", (await call("GET", "/api/audit/alerts", { cookie: docA })).status === 403);
+check("alerts need a session", (await call("GET", "/api/audit/alerts")).status === 401);
+
 // --- блокировка перебора ---
 for (let i = 0; i < 5; i++) await call("POST", "/api/login", { body: { username: "adm1", password: "wrong-password-1", code: "000000" } });
 const locked = await call("POST", "/api/login", { body: { username: "adm1", password: pw, code: code(secrets.adm) } });
 check("account locked after 5 failures, even with right credentials", locked.status === 429);
+
+// --- сбой записи журнала: работа останавливается ---
+auditDown = true;
+await call("POST", "/api/login", { body: { username: "doc1", password: "wrong-password-1", code: "000000" } }); // эта запись не сохранится
+const stopped = await call("GET", "/api/me", { cookie: docA });
+check("when the audit log cannot be written the server refuses to work (503)", stopped.status === 503);
+check("and keeps refusing", (await call("GET", "/api/patients", { cookie: docA })).status === 503);
 
 let bad = 0;
 for (const [n, passed] of t) if (!passed) { bad++; console.error("FAIL", n); }

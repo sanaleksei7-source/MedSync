@@ -24,12 +24,12 @@ Run `npm test` (all tests), `npm run seed` (creates fictional users in the gitig
 1. ~~**Drafts are held by the client.**~~ **Closed on 2026-11-27 (dev plan 3.1).** The server stores the transcript, the draft and the doctor's decisions (`server/visits.ts`) and signs only what it holds; the client sends commands, not text to sign. Still open from this item: the store is now PostgreSQL-backed with encrypted content (3.2, `docs/DB_OPERATIONS.md`), and an open draft cannot yet be resumed after a page refresh.
 2. **Patient data in the web bundle — closed in step 3.3.** The patient list now lives in `server/patients.ts` and reaches the browser only through `GET /api/patients` after the access check (listing is audited). The drug-group table for allergy warnings (`src/data/allergy.ts`) is still in the app code; it holds no patient data. The patient list itself is still a fixed fictional list in code, to be replaced by the real patient source.
 3. **History in the browser — closed in step 3.3.** History is read from the server (`GET /api/visits`), owner-only, without text.
-4. **Storage is JSON files** (`data/users.json`, `data/audit.log`). Real design: a database with encryption at rest, backups, restore tests and per-clinic isolation. The audit log should also be shipped to write-once storage, because a local file can be replaced wholesale together with its chain.
+4. **Storage is JSON files** (`data/users.json`, `data/audit.log`). Real design: a database with encryption at rest, backups, restore tests and per-clinic isolation. Audit log: moved to an append-only database table in step 3.4. Still to do: ship the log or its anchors to external write-once storage (hosting choice), because whoever controls the database can still replace it wholesale together with its chain.
 5. **Sessions live in memory** and are lost on restart; no multi-instance support.
 6. **No password change, reset, user management or MFA enrolment flow.** Users and secrets are created by a script.
 7. **Break-glass access** (emergency access to a patient not assigned to the doctor, with alerting) is not built.
 8. **Transport security** (TLS, HSTS, secure cookie flag) depends on the hosting; the code sets `Secure` only when `NODE_ENV=production`.
-9. **Audit log retention and who may read it** are undefined (⚖).
+9. **Audit log retention and who may read it** are undefined (⚖). Retention is now a setting (`AUDIT_RETENTION_YEARS`, provisional 5) with a report; only the auditor role reads the log and alerts.
 10. **The authentication code has had no independent review.** Home-grown authentication is a risk in itself; a state identity service or a vetted identity provider may be the better choice (see D6).
 
 ## 3. Decision records (pending)
