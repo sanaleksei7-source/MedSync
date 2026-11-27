@@ -7,6 +7,10 @@ import { createHash } from "node:crypto";
 import { verifyChain, type AuditRecord } from "./audit";
 import { DemoSigner } from "./signer";
 import type { AsrEngine } from "./asr/engine";
+import { newKey, parseKeyring } from "./db/crypto";
+import { openPglite } from "./db/db";
+import { migrate } from "./db/migrate";
+import { PgVisitStore } from "./db/visit-store";
 
 const secrets = { doc: newTotpSecret(), doc2: newTotpSecret(), adm: newTotpSecret(), aud: newTotpSecret() };
 const pw = "test-password-123";
@@ -20,6 +24,9 @@ const users = [
   mkUser("adm1", "admin", secrets.adm, []),
   mkUser("aud1", "auditor", secrets.aud, []),
 ];
+// --pglite: те же проверки на настоящем PostgreSQL с шифрованием полей (npm test запускает оба варианта).
+const pgDb = process.argv.includes("--pglite") ? await openPglite() : null;
+if (pgDb) await migrate(pgDb);
 const audit: AuditRecord[] = [];
 let extractCalls = 0;
 let extractResult: { title: string; statements: { text: string; sourceIds: number[] }[] }[] = [];
@@ -368,6 +375,6 @@ check("account locked after 5 failures, even with right credentials", locked.sta
 
 let bad = 0;
 for (const [n, passed] of t) if (!passed) { bad++; console.error("FAIL", n); }
-console.log(bad ? `BAD app (${bad}/${t.length})` : `ok app (${t.length})`);
+console.log(bad ? `BAD app (${bad}/${t.length})` : `ok app (${t.length}${pgDb ? ", PostgreSQL store" : ""})`);
 server.close();
 process.exit(bad ? 1 : 0);

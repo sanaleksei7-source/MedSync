@@ -1,5 +1,4 @@
 import http from "node:http";
-import { createHash } from "node:crypto";
 import { RateLimiter, hostAllowed, isJson, originAllowed } from "./guards";
 import { LoginThrottle, SessionStore, TokenStore, verifyPassword, verifyTotp } from "./auth";
 import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./audit";
@@ -7,9 +6,8 @@ import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
 import { patients } from "../src/data/patients";
-import { finalizeSections } from "../src/domain/rules";
 import { docs, type Line, type Section } from "../src/data/script";
-import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, blockersFor, clampSections, createVisit, isDocType, parseLines, toView, type VisitStore } from "./visits";
+import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, type VisitStore } from "./visits";
 
 export interface UserRecord {
   id: string;
@@ -106,7 +104,7 @@ export function createHandler(deps: Deps) {
     deps.persistAudit(rec);
   };
 
-  return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+  const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = (req.url ?? "").split("?")[0];
     const host = req.headers.host;
     if (!(deps.allowedHosts ? deps.allowedHosts.includes(host ?? "") : hostAllowed(host))) return send(res, 403, { error: "Forbidden" });
@@ -263,15 +261,15 @@ export function createHandler(deps: Deps) {
           log({ actor: user.id, action: "visit.denied", target: String(body.patientId).slice(0, 32) });
           return send(res, 403, { error: "Нет доступа к этому пациенту" });
         }
-        if (visits.countDrafts(user.id) >= MAX_OPEN_PER_USER) return send(res, 429, { error: "Слишком много незавершённых приёмов" });
+        if ((await visits.countDrafts(user.id)) >= MAX_OPEN_PER_USER) return send(res, 429, { error: "Слишком много незавершённых приёмов" });
         const v = createVisit(user.id, body.patientId, body.docType, body.demo === true, new Date(now()).toISOString());
-        visits.save(v);
+        await visits.save(v);
         log({ actor: user.id, action: "visit.create", target: v.id, detail: { source: v.source, docType: v.docType } });
         return send(res, 200, toView(v));
       }
 
       if (visitId) {
-        const v = visits.get(visitId);
+        const v = await visits.get(visitId);
         // Чужой приём выглядит так же, как несуществующий: чужие идентификаторы не перебрать.
         if (!v || v.ownerId !== user.id) {
           if (v) log({ actor: user.id, action: "visit.denied", target: visitId });
@@ -297,7 +295,7 @@ export function createHandler(deps: Deps) {
             if (!lines) return send(res, 400, { error: "Неверные данные запроса" });
             // Новая расшифровка делает прежний черновик и решения врача недействительными.
             v.lines = lines; v.sections = null; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
-            visits.save(v);
+            await visits.save(v);
             log({ actor: user.id, action: "visit.transcript", target: v.id, detail: { lines: lines.length } });
             return send(res, 200, toView(v));
           }
@@ -311,7 +309,7 @@ export function createHandler(deps: Deps) {
             try {
               const sections = clampSections(await deps.extract(docs[v.docType].title, docs[v.docType].sections.map((x) => x.title), v.lines), v.lines);
               v.sections = sections; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
-              visits.save(v);
+              await visits.save(v);
               return send(res, 200, toView(v));
             } catch (e) {
               console.error(e);
@@ -322,7 +320,7 @@ export function createHandler(deps: Deps) {
           if (action === "decisions") {
             const err = applyChanges(v, patient, body.changes, body.ack, iso);
             if (err) return send(res, 400, { error: err });
-            visits.save(v);
+            await visits.save(v);
             // В журнал — только вид действия и номер утверждения, без текста.
             const n = Array.isArray(body.changes) ? body.changes.length : 0;
             const k = Array.isArray(body.ack) ? body.ack.length : 0;
@@ -342,13 +340,12 @@ export function createHandler(deps: Deps) {
               log({ actor: user.id, action: "document.sign.blocked", target: v.patientId, detail: { unchecked: blockers.unchecked.length, allergy: blockers.allergy.length } });
               return send(res, 409, { error: "Документ нельзя подписать: есть непроверенные факты или конфликт с аллергией", blockers });
             }
-            const final = finalizeSections(v.sections, v.decisions);
+            // Хэш считается из данных приёма, которые держит сервер.
             const title = docs[v.docType].title;
-            const canonical = [title, patient.pin, ...final.flatMap((s) => [s.title, ...s.lines])].join("\n");
-            const hash = createHash("sha256").update(canonical).digest("hex");
+            const hash = documentHash(v, patient);
             v.signed = { hash, signature: deps.signer.sign(hash), signedAt: iso, signer: user.name, scheme: deps.signer.scheme, demo: deps.signer.demo };
             v.status = "signed"; v.updatedAt = iso;
-            visits.save(v);
+            await visits.save(v);
             // В журнал — только идентификаторы и хэш, без текста документа.
             log({ actor: user.id, action: "document.sign", target: v.patientId, detail: { visit: v.id, docType: title, hash, scheme: deps.signer.scheme } });
             return send(res, 200, toView(v));
@@ -358,5 +355,15 @@ export function createHandler(deps: Deps) {
     }
 
     return send(res, 404, { error: "Not found" });
+  };
+
+  return async (req: http.IncomingMessage, res: http.ServerResponse) => {
+    try {
+      await handle(req, res);
+    } catch (e) {
+      // Два запроса одновременно изменили один приём: проигравший получает понятный отказ, данные не теряются.
+      if (e instanceof VersionConflictError) return send(res, 409, { error: e.message });
+      throw e;
+    }
   };
 }

@@ -1,11 +1,11 @@
 // Приёмы на стороне сервера (шаг 3.1). Расшифровка, черновик и решения врача живут здесь;
 // подпись берёт текст отсюда, а не из запроса. Хранилище вынесено в интерфейс: сейчас оно в памяти,
 // на шаге 3.2 его заменит PostgreSQL без изменения остального кода.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { findConflicts } from "../src/data/allergy";
 import { docs, transcript as demoTranscript, type DocType, type Line, type Section } from "../src/data/script";
 import type { Patient } from "../src/data/patients";
-import { keyOf, signBlockers, type Action, type Decisions } from "../src/domain/rules";
+import { finalizeSections, keyOf, signBlockers, type Action, type Decisions } from "../src/domain/rules";
 import type { ChangeEntry, SignedInfo, VisitView } from "../src/domain/visit";
 
 export const MAX_LINES = 400;
@@ -29,19 +29,34 @@ export interface Visit {
   createdAt: string;
   updatedAt: string;
   signed?: SignedInfo;
+  /** Сколько раз приём сохранялся. Нужен, чтобы два одновременных запроса не затёрли друг друга. */
+  version: number;
+}
+
+/** Приём изменился с момента, когда его прочитали (например, два запроса подписи одновременно). */
+export class VersionConflictError extends Error {
+  constructor() { super("Приём изменился, обновите страницу"); }
 }
 
 export interface VisitStore {
-  get(id: string): Visit | undefined;
-  save(v: Visit): void;
-  countDrafts(ownerId: string): number;
+  get(id: string): Promise<Visit | undefined>;
+  /** Сохраняет приём; при успехе увеличивает v.version. Если в хранилище версия другая — VersionConflictError. */
+  save(v: Visit): Promise<void>;
+  countDrafts(ownerId: string): Promise<number>;
 }
 
 export class MemoryVisitStore implements VisitStore {
   private visits = new Map<string, Visit>();
-  get(id: string) { return this.visits.get(id); }
-  save(v: Visit) { this.visits.set(v.id, v); }
-  countDrafts(ownerId: string) {
+  // Хранилище отдаёт и принимает копии, как база данных: изменения без save() не сохраняются.
+  async get(id: string) { const v = this.visits.get(id); return v ? structuredClone(v) : undefined; }
+  async save(v: Visit) {
+    const stored = this.visits.get(v.id);
+    if ((stored?.version ?? 0) !== v.version) throw new VersionConflictError();
+    if (stored?.status === "signed") throw new VersionConflictError();
+    v.version += 1;
+    this.visits.set(v.id, structuredClone(v));
+  }
+  async countDrafts(ownerId: string) {
     let n = 0;
     for (const v of this.visits.values()) if (v.ownerId === ownerId && v.status === "draft") n++;
     return n;
@@ -67,6 +82,7 @@ export function createVisit(ownerId: string, patientId: string, docType: DocType
     changeLog: [],
     createdAt: now,
     updatedAt: now,
+    version: 0,
   };
 }
 
@@ -140,6 +156,13 @@ export function applyChanges(v: Visit, patient: Patient, changes: unknown, ack: 
 /** Что мешает подписать сейчас. Считается по данным сервера. */
 export function blockersFor(v: Visit, patient: Patient) {
   return signBlockers(v.sections ?? [], v.decisions, findConflicts(patient.allergies, v.lines), v.ackAllergy, () => true);
+}
+
+/** Хэш итогового текста документа: из данных приёма, которые держит сервер. Им же сверяется резервная копия. */
+export function documentHash(v: Visit, patient: Patient): string {
+  const final = finalizeSections(v.sections ?? [], v.decisions);
+  const canonical = [docs[v.docType].title, patient.pin, ...final.flatMap((s) => [s.title, ...s.lines])].join("\n");
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 export function toView(v: Visit): VisitView {

@@ -8,6 +8,10 @@ import { DEFAULT_ORIGINS } from "./guards";
 import { extractDraft } from "./llm";
 import { DemoSigner } from "./signer";
 import { engineFromEnv } from "./asr/engine";
+import { parseKeyring } from "./db/crypto";
+import { openFromEnv } from "./db/db";
+import { migrate } from "./db/migrate";
+import { PgVisitStore } from "./db/visit-store";
 
 const USERS_FILE = "data/users.json";
 const AUDIT_FILE = "data/audit.log";
@@ -24,9 +28,16 @@ const client = new Anthropic();
 const asr = engineFromEnv(process.env); // падает при небезопасном ASR_URL: аудио не должно уходить за пределы клиники
 console.log(asr ? `Распознавание речи: ${asr.name}` : "Распознавание речи не настроено (ASR_URL)");
 
+// База: DATABASE_URL (сервер PostgreSQL) или встроенная в папке data/db. Медицинский текст шифруется ключом DATA_KEYS (npm run db:setup).
+const db = await openFromEnv(process.env);
+const applied = await migrate(db);
+if (applied.length) console.log("Применены миграции базы:", applied.join(", "));
+console.log(`База данных: ${db.engine}`);
+
 const handler = createHandler({
   users,
   sessions: new SessionStore(),
+  visits: new PgVisitStore(db, parseKeyring(process.env.DATA_KEYS)),
   tokens: new TokenStore(),
   appOrigins: process.env.APP_ORIGINS?.split(",").map((o) => o.trim()).filter(Boolean) ?? [],
   throttle: new LoginThrottle(),

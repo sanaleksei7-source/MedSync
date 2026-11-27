@@ -21,7 +21,7 @@ Run `npm test` (all tests), `npm run seed` (creates fictional users in the gitig
 
 ## 2. Known limitations of the prototype (must be closed before real use)
 
-1. ~~**Drafts are held by the client.**~~ **Closed on 2026-11-27 (dev plan 3.1).** The server stores the transcript, the draft and the doctor's decisions (`server/visits.ts`) and signs only what it holds; the client sends commands, not text to sign. Still open from this item: the store is in memory (lost on restart, 3.2 adds the database), and an open draft cannot yet be resumed after a page refresh.
+1. ~~**Drafts are held by the client.**~~ **Closed on 2026-11-27 (dev plan 3.1).** The server stores the transcript, the draft and the doctor's decisions (`server/visits.ts`) and signs only what it holds; the client sends commands, not text to sign. Still open from this item: the store is now PostgreSQL-backed with encrypted content (3.2, `docs/DB_OPERATIONS.md`), and an open draft cannot yet be resumed after a page refresh.
 2. **Patient data still ships in the web bundle.** The patient list and the allergy table are static fictional data in `src/data/`. Real design: patients come from the server after an access check, and every read is audited.
 3. **History is in the browser** (`localStorage`). Real design: stored server-side per clinic with access control.
 4. **Storage is JSON files** (`data/users.json`, `data/audit.log`). Real design: a database with encryption at rest, backups, restore tests and per-clinic isolation. The audit log should also be shipped to write-once storage, because a local file can be replaced wholesale together with its chain.
