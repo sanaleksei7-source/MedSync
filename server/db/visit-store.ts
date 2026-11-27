@@ -85,4 +85,9 @@ export class PgVisitStore implements VisitStore {
     const { rows } = await this.db.query<{ n: string | number }>("SELECT count(*) AS n FROM visits WHERE owner_id = $1 AND status = 'draft'", [ownerId]);
     return Number(rows[0]?.n ?? 0);
   }
+
+  async listByOwner(ownerId: string, limit: number): Promise<Visit[]> {
+    const { rows } = await this.db.query<VisitRow>("SELECT * FROM visits WHERE owner_id = $1 ORDER BY updated_at DESC, id LIMIT $2", [ownerId, limit]);
+    return rows.map((r) => rowToVisit(this.ring, r));
+  }
 }

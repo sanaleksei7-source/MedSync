@@ -6,7 +6,7 @@
 //   restore восстанавливает копию в ПУСТУЮ базу и проверяет результат.
 //   drill   проверка восстановления: копия текущей базы разворачивается во временную пустую и проверяется. Базу не меняет.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { patients } from "../src/data/patients";
+import { patients } from "../server/patients";
 import { exportBackup, parseBackup, restoreBackup, serializeBackup, verifyDatabase } from "../server/db/backup";
 import { newKey, parseKeyring } from "../server/db/crypto";
 import { openFromEnv, openPglite } from "../server/db/db";

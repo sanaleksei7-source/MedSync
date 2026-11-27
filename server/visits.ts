@@ -4,7 +4,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { findConflicts } from "../src/data/allergy";
 import { docs, transcript as demoTranscript, type DocType, type Line, type Section } from "../src/data/script";
-import type { Patient } from "../src/data/patients";
+import type { Patient, VisitSummary } from "../src/domain/patient";
 import { finalizeSections, keyOf, signBlockers, type Action, type Decisions } from "../src/domain/rules";
 import type { ChangeEntry, SignedInfo, VisitView } from "../src/domain/visit";
 
@@ -43,6 +43,8 @@ export interface VisitStore {
   /** Сохраняет приём; при успехе увеличивает v.version. Если в хранилище версия другая — VersionConflictError. */
   save(v: Visit): Promise<void>;
   countDrafts(ownerId: string): Promise<number>;
+  /** Приёмы одного врача, новые сверху (не больше limit). */
+  listByOwner(ownerId: string, limit: number): Promise<Visit[]>;
 }
 
 export class MemoryVisitStore implements VisitStore {
@@ -60,6 +62,13 @@ export class MemoryVisitStore implements VisitStore {
     let n = 0;
     for (const v of this.visits.values()) if (v.ownerId === ownerId && v.status === "draft") n++;
     return n;
+  }
+  async listByOwner(ownerId: string, limit: number) {
+    return [...this.visits.values()]
+      .filter((v) => v.ownerId === ownerId)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
+      .slice(0, limit)
+      .map((v) => structuredClone(v));
   }
 }
 
@@ -165,10 +174,20 @@ export function documentHash(v: Visit, patient: Patient): string {
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-export function toView(v: Visit): VisitView {
+export function toView(v: Visit, patient: Patient): VisitView {
   return {
-    id: v.id, patientId: v.patientId, docType: v.docType, source: v.source, status: v.status,
+    id: v.id, patientId: v.patientId,
+    patient: { id: patient.id, name: patient.name, birthDate: patient.birthDate, pin: patient.pin, allergies: patient.allergies }, docType: v.docType, source: v.source, status: v.status,
     lines: v.lines, sections: v.sections, decisions: v.decisions, ackAllergy: v.ackAllergy, changeLog: v.changeLog,
     ...(v.signed ? { signed: v.signed } : {}),
+  };
+}
+
+/** Строка истории: без текста разговора и документа. */
+export function toSummary(v: Visit, patient: Patient): VisitSummary {
+  return {
+    id: v.id, patientId: v.patientId, patientName: patient.name, docType: v.docType, source: v.source, status: v.status,
+    hasDraft: v.sections !== null, updatedAt: v.updatedAt,
+    ...(v.signed ? { signedAt: v.signed.signedAt } : {}),
   };
 }

@@ -5,9 +5,9 @@ import { appendRecord, verifyChain, type AuditEvent, type AuditRecord } from "./
 import { canAccessPatient, can, type Actor, type Role } from "./rbac";
 import type { Signer } from "./signer";
 import { MAX_SECONDS, MIN_SECONDS, SAMPLE_RATE, SILENCE_RMS, isHallucination, isNonSpeechAnnotation, rms, type AsrEngine } from "./asr/engine";
-import { patients } from "../src/data/patients";
+import { patients } from "./patients";
 import { docs, type Line, type Section } from "../src/data/script";
-import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, type VisitStore } from "./visits";
+import { MAX_OPEN_PER_USER, MemoryVisitStore, applyChanges, VersionConflictError, blockersFor, clampSections, createVisit, documentHash, isDocType, parseLines, toView, toSummary, type VisitStore } from "./visits";
 
 export interface UserRecord {
   id: string;
@@ -246,10 +246,30 @@ export function createHandler(deps: Deps) {
       }
     }
 
+    // ---- пациенты: только те, кто закреплён за вошедшим врачом ----
+    if (req.method === "GET" && url === "/api/patients") {
+      if (!can(actor, "patient.read")) return send(res, 403, { error: "Недостаточно прав" });
+      const mine = patients.filter((p) => canAccessPatient(actor, "patient.read", p.id));
+      log({ actor: user.id, action: "patient.list", detail: { count: mine.length } });
+      return send(res, 200, { patients: mine.map((p) => ({ id: p.id, name: p.name, birthDate: p.birthDate, pin: p.pin, allergies: p.allergies })) });
+    }
+
     // ---- приёмы: расшифровка, черновик и решения врача хранит сервер ----
+    const HISTORY_LIMIT = 100;
     const visitUrl = /^\/api\/visits(?:\/([0-9a-f]{32}))?(?:\/(transcript|extract|decisions|sign))?$/.exec(url);
     if (visitUrl) {
       const [, visitId, action] = visitUrl;
+
+      // История: приёмы самого врача и только по тем пациентам, к которым у него есть доступ. Текста в ответе нет.
+      if (req.method === "GET" && !visitId && !action) {
+        if (!can(actor, "visit.edit")) return send(res, 403, { error: "Недостаточно прав" });
+        const list = (await visits.listByOwner(user.id, HISTORY_LIMIT)).flatMap((v) => {
+          const p = patients.find((x) => x.id === v.patientId);
+          return p && canAccessPatient(actor, "visit.edit", v.patientId) ? [toSummary(v, p)] : [];
+        });
+        log({ actor: user.id, action: "visit.list", detail: { count: list.length } });
+        return send(res, 200, { visits: list });
+      }
 
       if (isPost && !visitId && !action) {
         if (!can(actor, "visit.edit")) return send(res, 403, { error: "Недостаточно прав" });
@@ -257,7 +277,8 @@ export function createHandler(deps: Deps) {
         try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверные данные запроса" }); }
         if (typeof body.patientId !== "string" || !isDocType(body.docType) || (body.demo !== undefined && typeof body.demo !== "boolean"))
           return send(res, 400, { error: "Неверные данные запроса" });
-        if (!canAccessPatient(actor, "visit.edit", body.patientId) || !patients.some((p) => p.id === body.patientId)) {
+        const patient = patients.find((p) => p.id === body.patientId);
+        if (!patient || !canAccessPatient(actor, "visit.edit", body.patientId)) {
           log({ actor: user.id, action: "visit.denied", target: String(body.patientId).slice(0, 32) });
           return send(res, 403, { error: "Нет доступа к этому пациенту" });
         }
@@ -265,7 +286,7 @@ export function createHandler(deps: Deps) {
         const v = createVisit(user.id, body.patientId, body.docType, body.demo === true, new Date(now()).toISOString());
         await visits.save(v);
         log({ actor: user.id, action: "visit.create", target: v.id, detail: { source: v.source, docType: v.docType } });
-        return send(res, 200, toView(v));
+        return send(res, 200, toView(v, patient));
       }
 
       if (visitId) {
@@ -281,7 +302,7 @@ export function createHandler(deps: Deps) {
 
         if (req.method === "GET" && !action) {
           log({ actor: user.id, action: "visit.read", target: v.id });
-          return send(res, 200, toView(v));
+          return send(res, 200, toView(v, patient));
         }
         if (isPost && action) {
           if (v.status === "signed") return send(res, 409, { error: "Документ уже подписан и не меняется" });
@@ -297,7 +318,7 @@ export function createHandler(deps: Deps) {
             v.lines = lines; v.sections = null; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
             await visits.save(v);
             log({ actor: user.id, action: "visit.transcript", target: v.id, detail: { lines: lines.length } });
-            return send(res, 200, toView(v));
+            return send(res, 200, toView(v, patient));
           }
 
           if (action === "extract") {
@@ -310,7 +331,7 @@ export function createHandler(deps: Deps) {
               const sections = clampSections(await deps.extract(docs[v.docType].title, docs[v.docType].sections.map((x) => x.title), v.lines), v.lines);
               v.sections = sections; v.decisions = {}; v.ackAllergy = []; v.updatedAt = iso;
               await visits.save(v);
-              return send(res, 200, toView(v));
+              return send(res, 200, toView(v, patient));
             } catch (e) {
               console.error(e);
               return send(res, 502, { error: e instanceof Error && e.message ? e.message : "Ошибка модели" });
@@ -325,7 +346,7 @@ export function createHandler(deps: Deps) {
             const n = Array.isArray(body.changes) ? body.changes.length : 0;
             const k = Array.isArray(body.ack) ? body.ack.length : 0;
             log({ actor: user.id, action: "visit.decision", target: v.id, detail: { changes: n, allergyAck: k } });
-            return send(res, 200, toView(v));
+            return send(res, 200, toView(v, patient));
           }
 
           if (action === "sign") {
@@ -348,7 +369,7 @@ export function createHandler(deps: Deps) {
             await visits.save(v);
             // В журнал — только идентификаторы и хэш, без текста документа.
             log({ actor: user.id, action: "document.sign", target: v.patientId, detail: { visit: v.id, docType: title, hash, scheme: deps.signer.scheme } });
-            return send(res, 200, toView(v));
+            return send(res, 200, toView(v, patient));
           }
         }
       }

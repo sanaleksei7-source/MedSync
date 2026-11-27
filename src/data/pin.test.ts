@@ -1,4 +1,4 @@
-import { patients } from "./patients";
+import { patients } from "../../server/patients";
 import { isValidPin } from "./pin";
 
 let bad = 0;

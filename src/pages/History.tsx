@@ -1,17 +1,32 @@
-import { resetHistory, useHistory } from "../data/history";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { docs, type DocType } from "../data/script";
+import type { VisitSummary } from "../domain/patient";
 
-const statusLabel = { signed: "Подписан", sent: "Отправлен в медкарту" } as const;
+const statusLabel = (e: VisitSummary) => (e.status === "signed" ? "Подписан" : e.hasDraft ? "Черновик" : "Разговор без документа");
+const docLabel = (t: string) => (t in docs ? docs[t as DocType].label : t);
 const when = (t: string) => new Date(t).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 
-export default function History() {
-  const entries = useHistory();
+export default function History({ onOpen }: { onOpen: (id: string) => void }) {
+  const [entries, setEntries] = useState<VisitSummary[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ visits: VisitSummary[] }>("GET", "/api/visits").then((r) => setEntries(r.visits), (e) => setError(e instanceof Error ? e.message : "Не удалось загрузить историю"));
+  }, []);
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (!entries) return <p className="text-sm text-slate-500">Загрузка…</p>;
+
+  // Продолжить можно только неподписанный приём, у которого уже есть черновик документа.
+  const open = (e: VisitSummary) =>
+    e.status === "draft" && e.hasDraft ? (
+      <button onClick={() => onOpen(e.id)} className="rounded border px-3 py-1.5 text-sm text-teal-700 md:px-2 md:py-0.5">Продолжить</button>
+    ) : null;
+
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">История приёмов</h1>
-        <button onClick={resetHistory} className="rounded border px-3 py-1 text-sm text-slate-600">Сбросить демо-историю</button>
-      </div>
-      <p className="mb-2 text-xs text-slate-500">Хранится только в этом браузере.</p>
+      <h1 className="mb-2 text-xl font-semibold">История приёмов</h1>
+      <p className="mb-2 text-xs text-slate-500">Хранится на сервере в зашифрованном виде. Здесь только ваши приёмы.</p>
+      {entries.length === 0 && <p className="text-sm text-slate-500">Приёмов пока нет.</p>}
 
       {/* Телефон: карточки */}
       <ul className="space-y-2 md:hidden">
@@ -19,11 +34,12 @@ export default function History() {
           <li key={e.id} className="rounded bg-white p-4 shadow-sm">
             <div className="flex items-baseline justify-between gap-2">
               <span className="font-medium">{e.patientName}</span>
-              <span className="shrink-0 text-xs text-slate-500">{when(e.time)}</span>
+              <span className="shrink-0 text-xs text-slate-500">{when(e.signedAt ?? e.updatedAt)}</span>
             </div>
-            <div className="text-sm text-slate-600">{e.docLabel}</div>
-            <div className={`mt-1 inline-block rounded px-2 py-0.5 text-xs ${e.status === "sent" ? "bg-green-100 text-green-800" : "bg-teal-50 text-teal-800"}`}>
-              {statusLabel[e.status]}
+            <div className="text-sm text-slate-600">{docLabel(e.docType)}</div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span className={`inline-block rounded px-2 py-0.5 text-xs ${e.status === "signed" ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-800"}`}>{statusLabel(e)}</span>
+              {open(e)}
             </div>
           </li>
         ))}
@@ -37,15 +53,17 @@ export default function History() {
             <th className="p-3">Пациент</th>
             <th className="p-3">Документ</th>
             <th className="p-3">Статус</th>
+            <th className="p-3"></th>
           </tr>
         </thead>
         <tbody>
           {entries.map((e) => (
             <tr key={e.id} className="border-t">
-              <td className="p-3">{when(e.time)}</td>
+              <td className="p-3">{when(e.signedAt ?? e.updatedAt)}</td>
               <td className="p-3">{e.patientName}</td>
-              <td className="p-3">{e.docLabel}</td>
-              <td className="p-3">{statusLabel[e.status]}</td>
+              <td className="p-3">{docLabel(e.docType)}</td>
+              <td className="p-3">{statusLabel(e)}</td>
+              <td className="p-3 text-right">{open(e)}</td>
             </tr>
           ))}
         </tbody>

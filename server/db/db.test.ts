@@ -1,7 +1,7 @@
 // Тесты слоя базы: шифрование, миграции, хранилище приёмов, резервная копия и проверка восстановления.
 // Используется настоящий PostgreSQL внутри Node (PGlite), без внешнего сервера.
 import { isDeepStrictEqual } from "node:util";
-import { patients } from "../../src/data/patients";
+import { patients } from "../patients";
 import { VersionConflictError, createVisit, type Visit } from "../visits";
 import { exportBackup, parseBackup, restoreBackup, serializeBackup, verifyDatabase, type BackupFile } from "./backup";
 import { decrypt, encrypt, newKey, parseKeyring } from "./crypto";
@@ -78,6 +78,14 @@ check("countDrafts counts only the owner's drafts", await (async () => {
   const before = await store.countDrafts("owner-x");
   await store.save(mk("owner-x")); await store.save(mk("owner-x")); await store.save(mk("owner-y"));
   return (await store.countDrafts("owner-x")) === before + 2;
+})());
+check("listByOwner returns only the owner's visits, decrypted, newest first, within the limit", await (async () => {
+  const o = "owner-list";
+  for (let i = 0; i < 3; i++) { const v = mk(o); v.updatedAt = new Date(Date.UTC(2026, 0, 1 + i)).toISOString(); await store.save(v); }
+  await store.save(mk("owner-other"));
+  const all = await store.listByOwner(o, 10);
+  const two = await store.listByOwner(o, 2);
+  return all.length === 3 && two.length === 2 && all.every((v) => v.ownerId === o) && all[0].updatedAt > all[2].updatedAt && all[0].lines.length > 0;
 })());
 
 // подписанный приём неизменяем на уровне самой базы

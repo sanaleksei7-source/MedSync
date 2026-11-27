@@ -36,6 +36,7 @@ function AuditPanel() {
 export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined); // undefined = ещё проверяем
   const [tab, setTab] = useState<Tab>("home");
+  const [resume, setResume] = useState<string | null>(null); // приём из истории, который надо продолжить
 
   useEffect(() => {
     api<Me>("GET", "/api/me").then(setMe, (e) => {
@@ -45,7 +46,7 @@ export default function App() {
   }, []);
 
   const logout = async () => {
-    try { await api("POST", "/api/logout", {}); } finally { setMe(null); setTab("home"); }
+    try { await api("POST", "/api/logout", {}); } finally { setMe(null); setTab("home"); setResume(null); }
   };
 
   if (me === undefined) return <div className="p-6 text-slate-500">Загрузка…</div>;
@@ -82,8 +83,8 @@ export default function App() {
           <>
             {tab === "home" && <Home onStart={() => setTab("appointment")} />}
             {tab === "patients" && <Patients />}
-            {tab === "appointment" && <Appointment />}
-            {tab === "history" && <History />}
+            {tab === "appointment" && <Appointment resumeId={resume} onResumed={() => setResume(null)} />}
+            {tab === "history" && <History onOpen={(id) => { setResume(id); setTab("appointment"); }} />}
           </>
         )}
       </main>

@@ -1,31 +1,51 @@
 import { useEffect, useRef, useState } from "react";
 import { docs, type DocType } from "../data/script";
-import { patients } from "../data/patients";
 import { formatPin } from "../data/pin";
 import { findConflicts } from "../data/allergy";
 import LiveTranscript from "./LiveTranscript";
 import { api, ApiError } from "../api";
-import { addEntry, updateEntry } from "../data/history";
 import { blockingConflicts, finalizeSections, keyOf, uncheckedKeys, type Action, type Decision } from "../domain/rules";
 import type { VisitView } from "../domain/visit";
+import type { PatientView } from "../domain/patient";
 
-const patient = patients[0];
 const plural = (n: number) =>
   n % 10 === 1 && n % 100 !== 11 ? "факт" : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? "факта" : "фактов";
 const actionLabel: Record<Action, string> = { kept: "Оставлено", removed: "Убрано", edited: "Исправлено" };
 
-export default function Appointment() {
+export default function Appointment({ resumeId, onResumed }: { resumeId: string | null; onResumed: () => void }) {
   const [live, setLive] = useState(false);
   const [visit, setVisit] = useState<VisitView | null>(null);
+  const [resumed, setResumed] = useState(false);
+  const [patients, setPatients] = useState<PatientView[] | null>(null);
+  const [patientId, setPatientId] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Пациентов отдаёт сервер: только тех, кто закреплён за врачом.
+  useEffect(() => {
+    api<{ patients: PatientView[] }>("GET", "/api/patients").then(
+      (r) => { setPatients(r.patients); setPatientId((cur) => cur || r.patients[0]?.id || ""); },
+      (e) => setError(e instanceof Error ? e.message : "Не удалось загрузить пациентов"),
+    );
+  }, []);
+
+  // Продолжение приёма из истории: сервер отдаёт сохранённый черновик и решения врача.
+  useEffect(() => {
+    if (!resumeId) return;
+    api<VisitView>("GET", `/api/visits/${resumeId}`).then(
+      (v) => { setVisit(v); setResumed(true); },
+      (e) => setError(e instanceof Error ? e.message : "Не удалось открыть приём"),
+    ).finally(onResumed);
+  }, [resumeId]);
+  const patient = patients?.find((p) => p.id === patientId);
 
   // Приём создаёт и хранит сервер; демо-разговор и шаблон документа сервер берёт сам.
   const startDemo = async (docType: DocType) => {
     setBusy(true);
     setError("");
     try {
-      setVisit(await api<VisitView>("POST", "/api/visits", { patientId: patient.id, docType, demo: true }));
+      setVisit(await api<VisitView>("POST", "/api/visits", { patientId, docType, demo: true }));
+      setResumed(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось начать приём");
     } finally {
@@ -33,30 +53,41 @@ export default function Appointment() {
     }
   };
 
-  if (visit) return <Session key={visit.id} initial={visit} onBack={() => setVisit(null)} />;
-  if (live) return <LiveTranscript patientId={patient.id} onBack={() => setLive(false)} onDraft={setVisit} />;
+  if (visit) return <Session key={visit.id} initial={visit} resumed={resumed} onBack={() => setVisit(null)} />;
+  if (live && patient) return <LiveTranscript patientId={patient.id} onBack={() => setLive(false)} onDraft={(v) => { setResumed(false); setVisit(v); }} />;
+  if (resumeId) return <p className="text-sm text-slate-500">Открываю приём…</p>;
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">Какой документ оформить?</h1>
-      <p className="text-sm text-slate-600">Пациент: {patient.name}. Один и тот же разговор — разные документы.</p>
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {patients && patients.length === 0 && !error && <p className="text-sm text-slate-600">За вами пока не закреплён ни один пациент.</p>}
+      {patients && patients.length > 0 && (
+        <label className="block text-sm text-slate-600">
+          Пациент
+          <select value={patientId} onChange={(e) => setPatientId(e.target.value)} className="mt-1 block w-full rounded border bg-white px-2 py-2 text-slate-900 md:w-auto">
+            {patients.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </label>
+      )}
+      <p className="text-sm text-slate-600">Один и тот же разговор — разные документы.</p>
       <div className="grid gap-3 sm:grid-cols-2">
         {(Object.keys(docs) as DocType[]).map((t) => (
-          <button key={t} disabled={busy} onClick={() => startDemo(t)} className="rounded bg-white p-4 text-left shadow-sm hover:ring-2 hover:ring-teal-500 disabled:opacity-50">
+          <button key={t} disabled={busy || !patient} onClick={() => startDemo(t)} className="rounded bg-white p-4 text-left shadow-sm hover:ring-2 hover:ring-teal-500 disabled:opacity-50">
             <div className="font-medium">{docs[t].label}</div>
             <div className="text-sm text-slate-500">{docs[t].hint}</div>
           </button>
         ))}
       </div>
-      <button onClick={() => setLive(true)} className="rounded border border-dashed border-slate-400 p-3 text-left text-sm text-slate-600 hover:bg-white">
+      <button disabled={!patient} onClick={() => setLive(true)} className="rounded border border-dashed border-slate-400 p-3 text-left text-sm text-slate-600 hover:bg-white disabled:opacity-50">
         🎙 Живая запись с микрофона (эксперимент)
       </button>
     </div>
   );
 }
 
-function Session({ initial, onBack }: { initial: VisitView; onBack: () => void }) {
+function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: boolean; onBack: () => void }) {
   const [visit, setVisit] = useState(initial);
+  const patient = visit.patient;
   const type = visit.docType;
   const transcript = visit.lines;
   const doc = visit.sections ?? [];
@@ -67,9 +98,8 @@ function Session({ initial, onBack }: { initial: VisitView; onBack: () => void }
   const total = doc.reduce((n, s) => n + s.statements.length, 0);
   const [sent, setSent] = useState(false);
   const [signError, setSignError] = useState("");
-  const entryId = useRef(`h-${Date.now()}`);
   // В демо разговор «идёт»: реплики появляются по одной. В живом приёме всё уже расшифровано.
-  const [shown, setShown] = useState(visit.source === "demo" ? 0 : visit.lines.length);
+  const [shown, setShown] = useState(visit.source === "demo" && !resumed ? 0 : visit.lines.length);
   const [hot, setHot] = useState<number[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -149,8 +179,7 @@ function Session({ initial, onBack }: { initial: VisitView; onBack: () => void }
       return;
     }
     // Сервер сам перепроверяет правила и подписывает то, что хранит; от клиента приходит только команда.
-    const v = await send("sign", {});
-    if (v?.signed) addEntry({ id: entryId.current, patientName: patient.name, time: v.signed.signedAt, docLabel: docs[type].label, status: "signed", hash: v.signed.hash });
+    await send("sign", {});
   };
 
   const changeLog = (
@@ -195,7 +224,7 @@ function Session({ initial, onBack }: { initial: VisitView; onBack: () => void }
         </article>
         {!sent ? (
           <div className="flex flex-col gap-2 sm:flex-row print:hidden">
-            <button onClick={() => { updateEntry(entryId.current, { status: "sent" }); setSent(true); }} className="rounded bg-teal-600 px-4 py-3 text-sm text-white sm:py-2">Отправить в медкарту</button>
+            <button onClick={() => setSent(true)} className="rounded bg-teal-600 px-4 py-3 text-sm text-white sm:py-2">Отправить в медкарту</button>
             <button onClick={() => window.print()} className="rounded border px-4 py-3 text-sm sm:py-2">Печать / PDF</button>
           </div>
         ) : (

@@ -1,15 +1,7 @@
-import { makePin, type Sex } from "./pin";
+import { makePin } from "../src/data/pin";
+import type { Patient } from "../src/domain/patient";
 
 // Все данные вымышленные (демо).
-export interface Patient {
-  id: string;
-  name: string;
-  sex: Sex;
-  birthDate: string; // ISO
-  pin: string;
-  allergies: string[];
-}
-
 const raw: Omit<Patient, "pin">[] = [
   { id: "p1", name: "Иванова Анна Сергеевна", sex: "F", birthDate: "1987-03-14", allergies: ["пенициллин"] },
   { id: "p2", name: "Петров Азамат Бакытович", sex: "M", birthDate: "1975-11-02", allergies: [] },

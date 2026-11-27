@@ -2,7 +2,7 @@
 // ключи API, приватные ключи и ПИН, не относящиеся к вымышленным демо-пациентам.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { patients } from "../src/data/patients";
+import { patients } from "../server/patients";
 
 const demoPins = new Set(patients.map((p) => p.pin));
 const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf-8" }).split("\0").filter(Boolean);

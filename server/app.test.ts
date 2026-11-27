@@ -264,6 +264,28 @@ let capped = 0;
 for (let i = 0; i < 52; i++) if ((await post(doc2, "/api/visits", { patientId: "p3", docType: "osmotr" })).status === 429) capped++;
 check("open drafts per user are capped", capped >= 2);
 
+// --- пациенты и история с сервера (шаг 3.3) ---
+check("patients without session → 401", (await call("GET", "/api/patients")).status === 401);
+const pl1 = await call("GET", "/api/patients", { cookie: doc });
+const pl2 = await call("GET", "/api/patients", { cookie: doc2 });
+check("doctor sees only the patients assigned to them", pl1.status === 200 && pl1.body.patients.map((p: { id: string }) => p.id).join() === "p1,p2" && pl2.body.patients.map((p: { id: string }) => p.id).join() === "p3");
+check("patient list does not leak other doctors' patients", !JSON.stringify(pl1.body).includes("Сыдыкова") && !JSON.stringify(pl2.body).includes("Иванова"));
+check("patient list carries only the fields the screens need", Object.keys(pl1.body.patients[0]).sort().join() === "allergies,birthDate,id,name,pin");
+check("admin and auditor cannot list patients", (await call("GET", "/api/patients", { cookie: adm })).status === 403);
+check("visit view carries the patient card", demo.body.patient?.name === "Иванова Анна Сергеевна" && demo.body.patient.allergies.join() === "пенициллин" && demo.body.patient.id === "p1");
+
+check("history without session → 401", (await call("GET", "/api/visits")).status === 401);
+check("admin cannot read history", (await call("GET", "/api/visits", { cookie: adm })).status === 403);
+const h1 = await call("GET", "/api/visits", { cookie: doc });
+const hs = h1.body.visits as { id: string; patientId: string; patientName: string; status: string; hasDraft: boolean; signedAt?: string; updatedAt: string }[];
+check("history lists the doctor's own visits", h1.status === 200 && hs.some((v) => v.id === c1.body.id) && hs.some((v) => v.id === demo.body.id) && hs.every((v) => ["p1", "p2"].includes(v.patientId)));
+check("history never shows another doctor's visits", !(await call("GET", "/api/visits", { cookie: doc2 })).body.visits.some((v: { id: string }) => hs.some((x) => x.id === v.id)));
+check("history rows carry no conversation or document text", !JSON.stringify(h1.body).includes("амоксициллин") && !JSON.stringify(h1.body).includes("Боль в горле") && hs.every((v) => !("lines" in v) && !("sections" in v) && !("decisions" in v)));
+check("history marks signed visits with their signing time and drafts without", hs.some((v) => v.status === "signed" && !!v.signedAt) && hs.some((v) => v.status === "draft" && v.hasDraft) && hs.some((v) => v.status === "draft" && !v.hasDraft));
+check("history is newest first", hs.every((v, i) => i === 0 || hs[i - 1].updatedAt >= v.updatedAt));
+check("history is capped", (await call("GET", "/api/visits", { cookie: doc2 })).body.visits.length <= 100);
+check("history rows reach the visit through the owner-only route", (await call("GET", `/api/visits/${hs[0].id}`, { cookie: doc })).status === 200 && (await call("GET", `/api/visits/${hs[0].id}`, { cookie: doc2 })).status === 404);
+
 // --- распознавание речи ---
 const speech = pcmBytes(1.5, 8000);
 check("asr without session → 401", (await callRaw("/api/asr", speech)).status === 401);

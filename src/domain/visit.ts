@@ -2,6 +2,7 @@
 // Подписывается то, что хранит сервер, а не то, что прислал клиент.
 import type { DocType, Line, Section } from "../data/script";
 import type { Action, Decisions } from "./rules";
+import type { PatientView } from "./patient";
 
 export interface ChangeEntry {
   time: string; // ISO
@@ -23,6 +24,7 @@ export interface SignedInfo {
 export interface VisitView {
   id: string;
   patientId: string;
+  patient: PatientView;
   docType: DocType;
   source: "demo" | "live";
   status: "draft" | "signed";

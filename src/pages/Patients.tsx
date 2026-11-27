@@ -1,12 +1,22 @@
-import { patients } from "../data/patients";
+import { useEffect, useState } from "react";
+import { api } from "../api";
 import { formatPin } from "../data/pin";
+import type { PatientView } from "../domain/patient";
 
 const birth = (d: string) => d.split("-").reverse().join(".");
 
 export default function Patients() {
+  const [patients, setPatients] = useState<PatientView[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ patients: PatientView[] }>("GET", "/api/patients").then((r) => setPatients(r.patients), (e) => setError(e instanceof Error ? e.message : "Не удалось загрузить пациентов"));
+  }, []);
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (!patients) return <p className="text-sm text-slate-500">Загрузка…</p>;
   return (
     <div>
       <h1 className="mb-4 text-xl font-semibold">Пациенты</h1>
+      {patients.length === 0 && <p className="text-sm text-slate-500">За вами пока никто не закреплён.</p>}
 
       {/* Телефон: карточки */}
       <ul className="space-y-2 md:hidden">

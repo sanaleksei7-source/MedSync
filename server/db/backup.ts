@@ -2,7 +2,7 @@
 // Копия содержит только то, что лежит в базе: служебные поля открыто и медицинский текст в зашифрованном виде.
 // Ключи (DATA_KEYS) в копию НЕ входят и хранятся отдельно: копия без ключа бесполезна, ключ без копии тоже.
 import { createHash } from "node:crypto";
-import type { Patient } from "../../src/data/patients";
+import type { Patient } from "../../src/domain/patient";
 import { documentHash } from "../visits";
 import type { Keyring } from "./crypto";
 import type { Db, Queryable } from "./db";
