@@ -129,8 +129,9 @@ export default function App() {
             {tabs.map((t) => (
               <button
                 key={t.id}
-                onClick={() => setTab(t.id)}
-                className={`rounded px-3 py-1.5 text-sm ${tab === t.id ? "bg-teal-600 text-white" : "hover:bg-slate-100"}`}
+                onClick={() => { setTab(t.id); setShowAccount(false); }}
+                aria-current={tab === t.id && !showAccount ? "page" : undefined}
+                className={`rounded px-3 py-1.5 text-sm ${tab === t.id && !showAccount ? "bg-teal-600 text-white" : "hover:bg-slate-100"}`}
               >
                 {t.label}
               </button>
@@ -146,7 +147,7 @@ export default function App() {
           </span>
         )}
       </header>
-      <main className={`mx-auto max-w-5xl p-4 md:p-6 ${me?.role === "doctor" && !me.setup ? "pb-24 md:pb-6" : ""}`}>
+      <main className={`mx-auto max-w-7xl p-4 md:p-6 ${me?.role === "doctor" && !me.setup ? "pb-24 md:pb-6" : ""}`}>
         {!me && <Login onLogin={setMe} />}
         {me?.setup && <Account me={me} forced onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); }} />}
         {me && !me.setup && showAccount && <Account me={me} forced={false} onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); setShowAccount(false); }} />}
@@ -161,7 +162,7 @@ export default function App() {
           </>
         )}
       </main>
-      <footer className={`mx-auto max-w-5xl px-4 text-xs text-slate-500 md:px-6 md:pb-8 ${me?.role === "doctor" && !me.setup ? "pb-28" : "pb-8"}`}>
+      <footer className={`mx-auto max-w-7xl px-4 text-xs text-slate-500 md:px-6 md:pb-8 ${me?.role === "doctor" && !me.setup ? "pb-28" : "pb-8"}`}>
         Демо-версия. Все пациенты и данные вымышленные. Разговор — заранее написанный сценарий, а не запись и не
         реальное распознавание речи. ЭЦП и отправка в медкарту — имитация без юридической силы. Не является
         медицинским изделием.
@@ -171,9 +172,9 @@ export default function App() {
           {tabs.map((t) => (
             <button
               key={t.id}
-              onClick={() => setTab(t.id)}
-              aria-current={tab === t.id ? "page" : undefined}
-              className={`min-h-14 px-1 text-xs font-medium ${tab === t.id ? "text-teal-700 shadow-[inset_0_2px_0_0_var(--color-teal-600)]" : "text-slate-500"}`}
+              onClick={() => { setTab(t.id); setShowAccount(false); }}
+              aria-current={tab === t.id && !showAccount ? "page" : undefined}
+              className={`min-h-14 px-1 text-xs font-medium ${tab === t.id && !showAccount ? "text-teal-700 shadow-[inset_0_2px_0_0_var(--color-teal-600)]" : "text-slate-500"}`}
             >
               {t.label}
             </button>

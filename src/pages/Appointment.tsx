@@ -218,7 +218,7 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
   if (visit.status === "signed")
     return (
       <div className="space-y-4">
-        <article className="rounded bg-white p-4 shadow-sm md:p-6 print:shadow-none">
+        <article className="max-w-3xl rounded bg-white p-4 shadow-sm md:p-6 print:shadow-none">
           <h1 className="text-lg font-semibold">{docs[type].title}</h1>
           <p className="mb-3 text-sm text-slate-600">
             {patient.name} · ПИН <span className="font-mono">{formatPin(patient.pin)}</span>
@@ -275,8 +275,8 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
             <b>⚠ Аллергия на {c.allergen}.</b> В реплике #{c.lineId} назначен «{c.drug}» (та же группа препаратов).
             {open ? (
               <span className="mt-2 flex flex-wrap gap-2 md:ml-2 md:mt-0 md:inline-flex md:gap-1">
-                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => removeConflict(c.lineId)}>Убрать назначение</button>
-                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => ackConflict(c.lineId)}>Назначение проверено, оставить</button>
+                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-2.5 md:py-1" onClick={() => removeConflict(c.lineId)}>Убрать назначение</button>
+                <button className="rounded border border-red-300 bg-white px-3 py-1 md:px-2.5 md:py-1" onClick={() => ackConflict(c.lineId)}>Назначение проверено, оставить</button>
               </span>
             ) : (
               <span className="ml-2 text-xs text-red-700">решено врачом (см. журнал)</span>
@@ -284,10 +284,10 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
           </div>
         );
       })}
-      <div className="grid gap-4 md:grid-cols-2">
-        <section className="rounded bg-white p-4 shadow-sm">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+        <section className="rounded bg-white p-4 shadow-sm lg:sticky lg:top-[4.5rem] lg:self-start">
           <h2 className="mb-2 font-medium">Разговор <span className="text-xs font-normal text-amber-700">(сценарий, демо)</span></h2>
-          <ol className="max-h-64 space-y-1.5 md:max-h-[28rem] overflow-y-auto text-sm">
+          <ol className="max-h-64 space-y-1.5 md:max-h-[28rem] lg:max-h-[calc(100dvh-11rem)] overflow-y-auto text-sm">
             {transcript.slice(0, shown).map((l) => (
               <li
                 key={l.id}
@@ -329,9 +329,12 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
                       <li
                         key={k}
                         ref={(el) => { stmtRefs.current[k] = el; }}
-                        className={`rounded px-1.5 py-0.5 ${flagged ? "bg-yellow-100" : ""}`}
+                        tabIndex={0}
+                        className={`rounded px-1.5 py-0.5 focus-visible:outline-2 focus-visible:outline-teal-600 ${flagged ? "bg-yellow-100" : ""}`}
                         onMouseEnter={() => focusLine(st.sourceIds)}
                         onMouseLeave={() => setHot([])}
+                        onFocus={() => focusLine(st.sourceIds)}
+                        onBlur={() => setHot([])}
                       >
                         {editing === k ? (
                           <div className="flex gap-1">
@@ -357,9 +360,9 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
                           <div className="mt-1 text-xs text-yellow-900">
                             Это не прозвучало в разговоре
                             <span className="mt-1 flex flex-wrap gap-2 md:ml-2 md:mt-0 md:inline-flex md:gap-1">
-                              <button className="rounded border bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => decide(k, st.text, { action: "kept" })}>Оставить</button>
-                              <button className="rounded border bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => decide(k, st.text, { action: "removed" })}>Убрать</button>
-                              <button className="rounded border bg-white px-3 py-1 md:px-1.5 md:py-0" onClick={() => { setDraft(st.text); setEditing(k); }}>Исправить</button>
+                              <button className="rounded border bg-white px-3 py-1 md:px-2.5 md:py-1" onClick={() => decide(k, st.text, { action: "kept" })}>Оставить</button>
+                              <button className="rounded border bg-white px-3 py-1 md:px-2.5 md:py-1" onClick={() => decide(k, st.text, { action: "removed" })}>Убрать</button>
+                              <button className="rounded border bg-white px-3 py-1 md:px-2.5 md:py-1" onClick={() => { setDraft(st.text); setEditing(k); }}>Исправить</button>
                             </span>
                           </div>
                         )}
@@ -370,6 +373,7 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
               </div>
             );
           })}
+          <div className="max-md:contents md:sticky md:bottom-0 md:z-10 md:-mx-4 md:-mb-4 md:rounded-b md:border-t md:bg-white md:px-4 md:py-3">
           {signError && <p className="mb-1 text-sm text-red-600">{signError}</p>}
           {allergyWarn && <p className="mb-1 text-sm text-red-600">Сначала решите вопрос с аллергией</p>}
           {warn && <p className="mb-1 text-sm text-red-600">Сначала проверьте жёлтые факты</p>}
@@ -380,6 +384,7 @@ function Session({ initial, resumed, onBack }: { initial: VisitView; resumed: bo
           >
             Подписать ЭЦП
           </button>
+          </div>
         </section>
       </div>
       {changeLog}
