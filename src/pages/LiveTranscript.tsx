@@ -5,6 +5,8 @@ import { api, apiAudio, ApiError } from "../api";
 import { CAPTURE_RATE, captureSupported, startCapture, type Capture } from "../audio/capture";
 import { Segmenter, toInt16 } from "../audio/segmenter";
 import { applySuggestion, suggestDrug } from "../audio/suggest";
+import { holdSession } from "../session/idle";
+import { copyText } from "../session/clipboard";
 
 /** Слова, в которых модель сомневается (уверенность ниже порога), подсвечиваются. Порог выбран по малой выборке и требует перепроверки. */
 const UNCERTAIN_BELOW = 0.7; // на 11 записях: при 0.5 ловится 49 % ошибок (7 % ложных тревог), при 0.7 — 76 % (20 %)
@@ -42,6 +44,9 @@ export default function LiveTranscript({
   const tempId = useRef(-1);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const visitId = useRef<string | null>(null);
+
+  // Пока идёт запись, приложение не выходит само при бездействии: врач говорит с пациентом, а не нажимает кнопки.
+  useEffect(() => (recording ? holdSession() : undefined), [recording]);
 
   const failMsg = (e: unknown) => (e instanceof ApiError ? (e.status === 401 ? "Сессия истекла. Войдите заново." : e.message) : "Не удалось связаться с сервером");
   // Все обращения к серверу идут строго по очереди: реплики не меняются местами, правки не обгоняют распознавание.
@@ -252,7 +257,7 @@ export default function LiveTranscript({
                 <button disabled={busy || pending} onClick={makeDraft} className="rounded bg-teal-600 px-3 py-2 text-white disabled:opacity-50 sm:py-1">
                   {busy ? "Составляю…" : "Составить документ"}
                 </button>
-                <button className="rounded border px-3 py-1" onClick={() => navigator.clipboard?.writeText(usable.map((l) => `${l.speaker}: ${l.text}`).join("\n"))}>
+                <button className="rounded border px-3 py-1" onClick={() => copyText(usable.map((l) => `${l.speaker}: ${l.text}`).join("\n"))}>
                   Копировать текст
                 </button>
               </div>

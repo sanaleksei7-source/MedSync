@@ -55,6 +55,7 @@ const login = await call("/api/login", { method: "POST", body: { username: "d1",
 const sc = login.headers.get("set-cookie") ?? "";
 check("production cookie is __Host- prefixed, Secure, HttpOnly, SameSite=Strict", sc.startsWith("__Host-medsync_session=") && /; Secure/.test(sc) && /HttpOnly/.test(sc) && /SameSite=Strict/.test(sc) && /Path=\//.test(sc) && !/Domain=/i.test(sc));
 const cookie = sc.split(";")[0];
+check("the login cookie is a browser-session cookie (no Max-Age, no Expires)", !/Max-Age|Expires/i.test(sc));
 check("the __Host- cookie works for later requests", (await call("/api/me", { cookie, xff: "10.2.2.2" })).status === 200);
 check("the plain cookie name is not accepted in production", (await call("/api/me", { cookie: cookie.replace("__Host-", ""), xff: "10.2.2.2" })).status === 401);
 const lo = await call("/api/logout", { method: "POST", body: {}, cookie, xff: "10.2.2.2" });

@@ -55,6 +55,9 @@ export interface Deps {
 // В рабочей среде (только https) имя с префиксом __Host-: такой cookie браузер примет лишь с Secure, Path=/ и без Domain.
 export const cookieName = (secure: boolean) => (secure ? "__Host-medsync_session" : "medsync_session");
 
+// Сессия кончилась или не предъявлена. Поле code нужно странице, чтобы отличить это от других ответов 401 (например, «неверный текущий пароль»).
+const AUTH_REQUIRED = { error: "Требуется вход", code: "auth_required" };
+
 function send(res: http.ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -206,7 +209,7 @@ export function createHandler(deps: Deps) {
       }
       const token = deps.sessions.create(user.id, now());
       log({ actor: user.id, action: "login.ok", detail: { user: key, ip: ipT } });
-      const cookie = `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${deps.secureCookie ? "; Secure" : ""}`;
+      const cookie = `${COOKIE_NAME}=${token}; HttpOnly; SameSite=Strict; Path=/${deps.secureCookie ? "; Secure" : ""}`;
       return send(res, 200, { id: user.id, name: user.name, role: user.role, setup: user.setup ?? null }, { "Set-Cookie": cookie });
     }
 
@@ -217,13 +220,13 @@ export function createHandler(deps: Deps) {
       let body: { refreshToken?: unknown };
       try { body = (await readJson(req)) as typeof body; } catch { return send(res, 400, { error: "Неверный запрос" }); }
       const r = typeof body.refreshToken === "string" && body.refreshToken.length <= 128 ? deps.tokens.refresh(body.refreshToken, now()) : null;
-      if (!r) return send(res, 401, { error: "Требуется вход" });
+      if (!r) return send(res, 401, AUTH_REQUIRED);
       if ("reuse" in r) {
         log({ actor: r.userId, action: "token.reuse", detail: { client: "app" } });
-        return send(res, 401, { error: "Требуется вход" }); // старый токен предъявлен повторно: все токены этого входа отозваны
+        return send(res, 401, AUTH_REQUIRED); // старый токен предъявлен повторно: все токены этого входа отозваны
       }
       const u = deps.users.find((x) => x.id === r.userId);
-      if (!u || u.disabled) return send(res, 401, { error: "Требуется вход" });
+      if (!u || u.disabled) return send(res, 401, AUTH_REQUIRED);
       log({ actor: u.id, action: "token.refresh", detail: { client: "app" } });
       return send(res, 200, { id: u.id, name: u.name, role: u.role, setup: u.setup ?? null, ...r.pair });
     }
@@ -233,9 +236,9 @@ export function createHandler(deps: Deps) {
     const bearer = bearerToken(req);
     const cookie = cookieToken(req, COOKIE_NAME);
     if (bearer && cookie) return send(res, 400, { error: "Неверный запрос" });
-    if (req.headers.authorization && !bearer) return send(res, 401, { error: "Требуется вход" });
+    if (req.headers.authorization && !bearer) return send(res, 401, AUTH_REQUIRED);
     // Запросы приложений идут только по токену; браузерные — только по cookie.
-    if (fromApp && cookie) return send(res, 401, { error: "Требуется вход" });
+    if (fromApp && cookie) return send(res, 401, AUTH_REQUIRED);
     const token = cookie;
     let userId: string | undefined;
     let tokenFamily: string | undefined;
@@ -247,7 +250,7 @@ export function createHandler(deps: Deps) {
       userId = deps.sessions.get(token, now())?.userId;
     }
     const user = userId ? deps.users.find((u) => u.id === userId) : undefined;
-    if (!user || user.disabled) return send(res, 401, { error: "Требуется вход" });
+    if (!user || user.disabled) return send(res, 401, AUTH_REQUIRED);
     const actor: Actor = { id: user.id, role: user.role, assignedPatients: user.assignedPatients, emergencyPatients: bg.active(user.id, now()) };
 
     // Пока пользователь не завершил настройку (одноразовый пароль, новый секрет второго фактора), доступны только учётная запись, выход и сведения о себе.

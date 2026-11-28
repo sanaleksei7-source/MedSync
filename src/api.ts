@@ -53,6 +53,22 @@ async function parse<T>(r: Response): Promise<T> {
   return data as T;
 }
 
+/**
+ * Сервер ответил «нужен вход» (сессия кончилась): страница должна сразу выйти и очистить экран, а не показывать старые данные.
+ * Другие ответы 401 (неверный пароль при его смене, неверный код) к этому не относятся: их отличает поле code.
+ */
+let onSessionLost: (() => void) | null = null;
+export const setSessionLostHandler = (fn: (() => void) | null) => { onSessionLost = fn; };
+
+async function parseChecked<T>(r: Response, path: string): Promise<T> {
+  try {
+    return await parse<T>(r);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401 && (e.body as { code?: string } | undefined)?.code === "auth_required" && path !== "/api/me" && path !== "/api/logout") onSessionLost?.();
+    throw e;
+  }
+}
+
 /** Запрос к API. Заголовок X-Requested-With обязателен для POST. */
 export async function api<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const payload = NATIVE && path === "/api/login" && body && typeof body === "object" ? { ...body, client: "app" } : body;
@@ -64,7 +80,7 @@ export async function api<T>(method: "GET" | "POST", path: string, body?: unknow
     },
     body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
-  const data = await parse<T>(r);
+  const data = await parseChecked<T>(r, path);
   if (NATIVE) {
     if (path === "/api/login") {
       const d = data as T & { accessToken?: string; refreshToken?: string };
@@ -86,7 +102,7 @@ export async function apiAudio<T = { text: string; words?: { w: string; p: numbe
     headers: { "Content-Type": "application/octet-stream", "X-Requested-With": "medsync", "X-Sample-Rate": "16000", ...extraHeaders },
     body: bytes,
   });
-  return parse<T>(r);
+  return parseChecked<T>(r, path);
 }
 
 /** Сбросить токены (выход, «войдите заново» после смены пароля). */

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Home from "./pages/Home";
 import Patients from "./pages/Patients";
 import Appointment from "./pages/Appointment";
@@ -6,7 +6,21 @@ import History from "./pages/History";
 import Login from "./pages/Login";
 import Account from "./pages/Account";
 import AdminUsers from "./pages/AdminUsers";
-import { api, ApiError, forgetSession, type Me } from "./api";
+import { api, ApiError, forgetSession, setSessionLostHandler, type Me } from "./api";
+import { CHANNEL, useSessionGuard, type SignOutReason } from "./session/useSessionGuard";
+import { clearCopiedText } from "./session/clipboard";
+
+// Почему человек видит страницу входа: после выхода страница перезагружается и объясняет причину (без записи в хранилище браузера).
+const outNotice: Record<string, string> = {
+  idle: "Вы вышли из системы из-за бездействия. Войдите снова.",
+  expired: "Сессия истекла. Войдите снова.",
+  other: "Вы вышли из системы в другой вкладке.",
+};
+const loginNotice = (() => {
+  const q = new URLSearchParams(location.search).get("out");
+  if (q !== null) history.replaceState(null, "", location.pathname);
+  return q && outNotice[q] ? outNotice[q] : "";
+})();
 
 const tabs = [
   { id: "home", label: "Главная" },
@@ -112,9 +126,46 @@ export default function App() {
     });
   }, []);
 
-  const logout = async () => {
-    try { await api("POST", "/api/logout", {}); } finally { setMe(null); setTab("home"); setResume(null); setShowAccount(false); }
+  const leaving = useRef(false);
+
+  /**
+   * Выход очищает всё, что страница держала в памяти: страница перезагружается целиком (состояние экранов, токены, черновики на экране).
+   * Остальные вкладки этого браузера выходят вместе с ней.
+   */
+  const signOut = async (reason?: SignOutReason, serverAlready = false) => {
+    if (leaving.current) return;
+    leaving.current = true;
+    if (!serverAlready) await Promise.race([api("POST", "/api/logout", {}).catch(() => undefined), new Promise((r) => setTimeout(r, 3000))]);
+    forgetSession();
+    clearCopiedText();
+    if (typeof BroadcastChannel !== "undefined") {
+      const c = new BroadcastChannel(CHANNEL);
+      c.postMessage({ t: "logout", reason: reason ?? "other" });
+      c.close();
+    }
+    location.replace(reason ? `/?out=${reason}` : "/");
   };
+
+  // Сервер сказал «нужен вход» на любой запрос — сразу выходим, не оставляя на экране старые данные.
+  useEffect(() => {
+    setSessionLostHandler(() => { void signOut("expired", true); });
+    return () => setSessionLostHandler(null);
+  }, []);
+
+  // Другая вкладка вышла — выходим и здесь.
+  useEffect(() => {
+    if (!me || typeof BroadcastChannel === "undefined") return;
+    const c = new BroadcastChannel(CHANNEL);
+    c.onmessage = (e) => {
+      if (e.data?.t !== "logout" || leaving.current) return;
+      leaving.current = true;
+      forgetSession();
+      location.replace(`/?out=${e.data.reason in outNotice ? e.data.reason : "other"}`);
+    };
+    return () => c.close();
+  }, [!!me]);
+
+  const secondsLeft = useSessionGuard(!!me, (r) => { void signOut(r, r === "expired"); });
 
   const refreshMe = () => api<Me>("GET", "/api/me").then(setMe, () => setMe(null));
 
@@ -122,6 +173,18 @@ export default function App() {
 
   return (
     <div className="min-h-dvh bg-slate-50 text-slate-900">
+      {secondsLeft !== null && (
+        <div role="alertdialog" aria-modal="true" aria-labelledby="idle-title" className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded bg-white p-5 shadow-lg">
+            <h2 id="idle-title" className="font-semibold">Вы ещё здесь?</h2>
+            <p className="mt-1 text-sm text-slate-600">Из-за бездействия MedSync выйдет из системы через {secondsLeft} с. Всё, что уже сохранено на сервере, останется в черновике.</p>
+            <div className="mt-3 flex gap-2">
+              <button autoFocus className="rounded bg-teal-600 px-4 py-2 text-sm text-white">Остаться в системе</button>
+              <button onClick={() => void signOut()} className="rounded border px-4 py-2 text-sm">Выйти сейчас</button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="safe-top sticky top-0 z-20 flex flex-wrap items-center gap-x-6 gap-y-1 border-b bg-white px-4 py-2 md:px-6 md:py-3">
         <span className="text-lg font-semibold text-teal-700">MedSync</span>
         {me?.role === "doctor" && !me.setup && (
@@ -143,12 +206,12 @@ export default function App() {
           <span className="flex items-center gap-2 text-sm text-slate-600">
             <span className="max-w-[10rem] truncate">{me.name}</span>
             {!me.setup && <button onClick={() => setShowAccount((v) => !v)} className="rounded border px-3 py-1 text-xs">Аккаунт</button>}
-            <button onClick={logout} className="rounded border px-3 py-1 text-xs">Выйти</button>
+            <button onClick={() => void signOut()} className="rounded border px-3 py-1 text-xs">Выйти</button>
           </span>
         )}
       </header>
       <main className={`mx-auto max-w-7xl p-4 md:p-6 ${me?.role === "doctor" && !me.setup ? "pb-24 md:pb-6" : ""}`}>
-        {!me && <Login onLogin={setMe} />}
+        {!me && <Login onLogin={setMe} notice={loginNotice} />}
         {me?.setup && <Account me={me} forced onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); }} />}
         {me && !me.setup && showAccount && <Account me={me} forced={false} onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); setShowAccount(false); }} />}
         {me && !me.setup && !showAccount && me.role === "admin" && <AdminUsers selfId={me.id} />}

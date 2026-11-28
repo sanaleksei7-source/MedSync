@@ -62,7 +62,10 @@
 		# Файлы со «отпечатком» в имени можно кэшировать надолго; index.html, sw.js и manifest — нет.
 		@hashed path /assets/*
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
-		@fresh path / /index.html /sw.js /manifest.webmanifest /offline.html /offline.css
+		# Страница приложения — no-store: после выхода «Назад» и «Вперёд» не должны показывать старый экран с данными.
+		@shell path / /index.html
+		header @shell Cache-Control "no-store"
+		@fresh path /sw.js /manifest.webmanifest /offline.html /offline.css
 		header @fresh Cache-Control "no-cache"
 		try_files {path} /index.html
 		file_server
