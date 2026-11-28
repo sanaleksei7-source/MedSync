@@ -1,5 +1,7 @@
 # MedSync mobile app — plan
 
+> **PAUSED on 2026-11-28.** The owner changed the goal to a web app for laptops. This document is kept for later; see `docs/DEVELOPMENT_PLAN.md` for the current plan. Parts that still apply to a laptop deployment (internet-facing hardening, no-server procedure) live in `docs/DEPLOY.md`.
+
 Decided with the owner on 2026-11-26: **final goal is a mobile app; iPhone and Android from the start; online only (no offline mode); records the whole doctor–patient conversation.** Fictional data only until the legal and security gates in `SECURITY_PLAN.md` are met. Nothing in this document has been built yet.
 
 ## 1. Approach: one codebase, web first, wrapped for phones
