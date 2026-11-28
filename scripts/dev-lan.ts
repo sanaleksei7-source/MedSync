@@ -79,7 +79,8 @@ console.log(`
 const run = (cmd: string, args: string[], env: Record<string, string>) =>
   spawn(cmd, args, { stdio: "inherit", shell: process.platform === "win32", env: { ...process.env, ...env } });
 
-const api = run("npx", ["tsx", "server/index.ts"], { ALLOWED_ORIGINS: `${origin},https://localhost:${PORT}` });
+// APP_ORIGINS: приложение Android открывает страницу с https://localhost и входит по токенам (шаг 4.1).
+const api = run("npx", ["tsx", "server/index.ts"], { ALLOWED_ORIGINS: `${origin},https://localhost:${PORT}`, APP_ORIGINS: "https://localhost,capacitor://localhost" });
 if (built) {
   console.log("Собираю приложение…");
   execFileSync("npx", ["vite", "build"], { stdio: "inherit", shell: process.platform === "win32" });

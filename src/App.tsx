@@ -6,7 +6,7 @@ import History from "./pages/History";
 import Login from "./pages/Login";
 import Account from "./pages/Account";
 import AdminUsers from "./pages/AdminUsers";
-import { api, ApiError, type Me } from "./api";
+import { api, ApiError, forgetSession, type Me } from "./api";
 
 const tabs = [
   { id: "home", label: "Главная" },
@@ -148,8 +148,8 @@ export default function App() {
       </header>
       <main className={`mx-auto max-w-5xl p-4 md:p-6 ${me?.role === "doctor" && !me.setup ? "pb-24 md:pb-6" : ""}`}>
         {!me && <Login onLogin={setMe} />}
-        {me?.setup && <Account me={me} forced onChanged={refreshMe} onRelogin={() => setMe(null)} />}
-        {me && !me.setup && showAccount && <Account me={me} forced={false} onChanged={refreshMe} onRelogin={() => { setMe(null); setShowAccount(false); }} />}
+        {me?.setup && <Account me={me} forced onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); }} />}
+        {me && !me.setup && showAccount && <Account me={me} forced={false} onChanged={refreshMe} onRelogin={() => { forgetSession(); setMe(null); setShowAccount(false); }} />}
         {me && !me.setup && !showAccount && me.role === "admin" && <AdminUsers selfId={me.id} />}
         {me && !me.setup && !showAccount && me.role === "auditor" && <AuditPanel />}
         {me?.role === "doctor" && !me.setup && !showAccount && (

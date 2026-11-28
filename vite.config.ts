@@ -6,12 +6,15 @@ import { join } from "node:path";
 
 // Заголовки безопасности. frame-ancestors и HSTS нельзя задать через <meta>,
 // поэтому на реальном хостинге их нужно выставить на уровне веб-сервера (см. SECURITY_PLAN.md).
+// Сборка для приложения (VITE_API_BASE, шаг 4.1): страница открыта с https://localhost, сервер — по этому адресу.
+const apiBase = process.env.VITE_API_BASE ? new URL(process.env.VITE_API_BASE).origin : "";
+if (apiBase && !apiBase.startsWith("https://")) throw new Error("VITE_API_BASE должен быть https://");
 const csp = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
   "img-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self'${apiBase ? ` ${apiBase}` : ""}`,
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'self'",

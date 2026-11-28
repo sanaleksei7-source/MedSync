@@ -6,6 +6,7 @@
   "scripts": {
     "dev:lan": "tsx scripts/dev-lan.ts",
     "dev:lan:app": "tsx scripts/dev-lan.ts --build",
+    "android": "tsx scripts/android.ts",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "tsx src/data/pin.test.ts && tsx server/extract.test.ts && tsx server/guards.test.ts && tsx src/domain/rules.test.ts && tsx server/eval/check.test.ts && tsx server/audit.test.ts && tsx server/alerts.test.ts && tsx server/accounts.test.ts && tsx server/rbac.test.ts && tsx server/auth.test.ts && tsx server/app.test.ts && tsx server/app.test.ts --pglite && tsx server/db/db.test.ts && tsx server/asr/engine.test.ts && tsx server/asr/metrics.test.ts && tsx src/audio/segmenter.test.ts && tsx src/audio/suggest.test.ts && tsx src/audio/resample.test.ts && tsx scripts/lan.test.ts && tsx scripts/pwa.test.ts && tsx scripts/bundle.test.ts && tsx scripts/site-check.test.ts && tsx server/net.test.ts && tsx server/notify.test.ts",
@@ -29,12 +30,15 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.13.0",
+    "@capacitor/android": "8.6.2",
+    "@capacitor/core": "8.6.2",
     "@electric-sql/pglite": "^0.6.0",
     "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.6.2",
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",

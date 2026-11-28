@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ТОЛЬКО отладочная сборка: дополнительно доверяет локальному сертификату разработки (npm run dev:lan).
+     Он ограничен частными адресами (192.168.*, 10.*, 172.16–31.*, localhost) и не может подтвердить настоящий сайт.
+     Файл сертификата копирует scripts/android.ts; в Git он не попадает. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="@raw/medsync_dev_ca" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>
