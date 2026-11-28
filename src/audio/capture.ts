@@ -1,14 +1,25 @@
 import { Resampler } from "./resample";
+import { pickInputs, type MicInput } from "./mic";
 
 export const CAPTURE_RATE = 16_000;
 
 export interface Capture {
   stop(): void;
+  /** Название микрофона, который реально включился (по данным браузера). */
+  label: string;
 }
 
 export interface CaptureOptions {
+  /** Выбранный врачом микрофон; без него — системный по умолчанию. */
+  deviceId?: string;
   /** Запись прервалась не по воле врача: звонок, другое приложение взяло микрофон, система приостановила звук. */
   onInterrupt?: (reason: string) => void;
+}
+
+/** Список микрофонов. Названия браузер отдаёт только после того, как человек разрешил микрофон. */
+export async function listInputs(): Promise<MicInput[]> {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  return pickInputs(await navigator.mediaDevices.enumerateDevices());
 }
 
 export const captureSupported = () =>
@@ -70,7 +81,13 @@ export async function startCapture(onFrame: (f: Float32Array) => void, options: 
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        ...(options.deviceId ? { deviceId: { exact: options.deviceId } } : {}),
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
     });
     await ctx.resume();
     await ctx.audioWorklet.addModule("/pcm-worklet.js");
@@ -100,7 +117,9 @@ export async function startCapture(onFrame: (f: Float32Array) => void, options: 
   document.addEventListener("visibilitychange", onVisible);
   void keepScreenOn();
 
+  const label = stream.getAudioTracks()[0]?.label ?? "";
   return {
+    label,
     stop() {
       if (stopped) return;
       tap.port.onmessage = null;

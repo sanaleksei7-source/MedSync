@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { docs, type DocType } from "../data/script";
 import type { VisitView } from "../domain/visit";
 import { api, apiAudio, ApiError } from "../api";
-import { CAPTURE_RATE, captureSupported, startCapture, type Capture } from "../audio/capture";
+import { CAPTURE_RATE, captureSupported, listInputs, startCapture, type Capture } from "../audio/capture";
+import { LevelMeter, describeMicError, type MicInput } from "../audio/mic";
 import { Segmenter, toInt16 } from "../audio/segmenter";
 import { applySuggestion, suggestDrug } from "../audio/suggest";
 import { holdSession } from "../session/idle";
@@ -32,6 +33,8 @@ export default function LiveTranscript({
   const [rows, setRows] = useState<Row[]>([]);
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState("");
+  // Прерывание записи (микрофон отключили) — отдельное сообщение: его не должны затирать другие ошибки, например сети.
+  const [notice, setNotice] = useState("");
   const [speaker, setSpeaker] = useState<Row["speaker"]>("Врач");
   const [type, setType] = useState<DocType>("osmotr");
   const [busy, setBusy] = useState(false);
@@ -44,6 +47,17 @@ export default function LiveTranscript({
   const tempId = useRef(-1);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const visitId = useRef<string | null>(null);
+  // Микрофон: выбор устройства, проверка до записи, шкала звука, признак «идёт запись»
+  const [inputs, setInputs] = useState<MicInput[]>([]);
+  const [deviceId, setDeviceId] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [level, setLevel] = useState(0);
+  const [silentFor, setSilentFor] = useState(0);
+  const [since, setSince] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [micName, setMicName] = useState("");
+  const [perm, setPerm] = useState<string>("unknown");
+  const meter = useRef<LevelMeter | null>(null);
 
   // Пока идёт запись, приложение не выходит само при бездействии: врач говорит с пациентом, а не нажимает кнопки.
   useEffect(() => (recording ? holdSession() : undefined), [recording]);
@@ -106,29 +120,124 @@ export default function LiveTranscript({
     segmenter.current?.flush().forEach(enqueue);
     segmenter.current = null;
     setRecording(false);
+    setTesting(false);
+    setSince(null);
+  };
+
+  const refreshInputs = async () => {
+    try {
+      const list = await listInputs();
+      setInputs(list);
+      setDeviceId((cur) => (cur && !list.some((d) => d.id === cur) ? "" : cur)); // выбранный микрофон отключили — вернёмся к системному
+    } catch {
+      setInputs([]);
+    }
+  };
+
+  // Проверка микрофона до записи: шкала движется, ничего не распознаётся и не отправляется.
+  const stopTest = () => {
+    capture.current?.stop();
+    capture.current = null;
+    setTesting(false);
+  };
+  const startTest = async () => {
+    setError("");
+    setNotice("");
+    meter.current = new LevelMeter(Date.now());
+    try {
+      const cap = await startCapture((f) => meter.current?.push(f, Date.now()), {
+        deviceId: deviceId || undefined,
+        onInterrupt: (reason) => {
+          capture.current = null;
+          setTesting(false);
+          setNotice(`Микрофон отключился (${reason}). Проверьте подключение и нажмите «Обновить список».`);
+          void refreshInputs();
+        },
+      });
+      capture.current = cap;
+      setMicName(cap.label);
+      setTesting(true);
+      void refreshInputs(); // после разрешения браузер отдаёт названия устройств
+    } catch (e) {
+      setError(describeMicError(e));
+      void refreshInputs();
+    }
   };
 
   const start = async () => {
     setError("");
+    setNotice("");
+    if (testing) stopTest();
     try {
       const seg = new Segmenter({ sampleRate: CAPTURE_RATE });
       segmenter.current = seg;
-      capture.current = await startCapture((frame) => seg.push(frame).forEach(enqueue), {
+      meter.current = new LevelMeter(Date.now());
+      capture.current = await startCapture((frame) => { meter.current?.push(frame, Date.now()); seg.push(frame).forEach(enqueue); }, {
+        deviceId: deviceId || undefined,
         onInterrupt: (reason) => {
           // Не теряем то, что уже наговорили: дорасшифровываем остаток и просим начать запись снова.
           capture.current = null;
           segmenter.current?.flush().forEach(enqueue);
           segmenter.current = null;
           setRecording(false);
-          setError(`Запись прервалась (${reason}). Проверьте текст и нажмите «Начать запись», чтобы продолжить.`);
+          setSince(null);
+          setNotice(`Запись прервалась (${reason}). Текст выше сохранён. Проверьте микрофон, при необходимости нажмите «Обновить список», и нажмите «Начать запись», чтобы продолжить.`);
+          void refreshInputs();
         },
       });
+      setMicName(capture.current.label);
+      setSince(Date.now());
       setRecording(true);
+      void refreshInputs();
     } catch (e) {
       segmenter.current = null;
-      setError(e instanceof Error && e.name === "NotAllowedError" ? "Нет доступа к микрофону. Разрешите его в настройках браузера." : e instanceof Error ? e.message : "Не удалось начать запись");
+      setError(describeMicError(e));
+      void refreshInputs();
     }
   };
+
+  // Список микрофонов и разрешение: обновляются, когда гарнитуру подключили или отключили.
+  useEffect(() => {
+    void refreshInputs();
+    const md = navigator.mediaDevices;
+    md?.addEventListener?.("devicechange", refreshInputs);
+    let status: PermissionStatus | undefined;
+    navigator.permissions?.query({ name: "microphone" as PermissionName }).then(
+      (s) => { status = s; setPerm(s.state); s.onchange = () => { setPerm(s.state); void refreshInputs(); }; },
+      () => undefined,
+    );
+    return () => {
+      md?.removeEventListener?.("devicechange", refreshInputs);
+      if (status) status.onchange = null;
+    };
+  }, []);
+
+  // Шкала, таймер записи и «тишина» обновляются пока микрофон включён.
+  useEffect(() => {
+    if (!recording && !testing) {
+      setLevel(0);
+      setSilentFor(0);
+      setElapsed(0);
+      return;
+    }
+    const t = setInterval(() => {
+      const now = Date.now();
+      setLevel(meter.current?.value ?? 0);
+      setSilentFor(meter.current?.silentFor(now) ?? 0);
+      setElapsed(since ? now - since : 0);
+    }, 150);
+    return () => clearInterval(t);
+  }, [recording, testing, since]);
+
+  // Пока идёт запись: пометка во вкладке браузера и защита от случайного закрытия страницы.
+  useEffect(() => {
+    if (!recording) return;
+    const prev = document.title;
+    document.title = `● Запись — ${prev}`;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => { document.title = prev; window.removeEventListener("beforeunload", warn); };
+  }, [recording]);
 
   useEffect(() => () => { capture.current?.stop(); }, []);
 
@@ -172,6 +281,37 @@ export default function LiveTranscript({
         <p className="text-red-600">Этот браузер не поддерживает захват звука. Откройте демо в Chrome, Edge или Safari.</p>
       ) : (
         <>
+          {recording && (
+            <div role="status" className="sticky top-16 z-10 flex flex-wrap items-center gap-x-3 gap-y-1 rounded bg-red-600 px-3 py-2 text-sm text-white shadow">
+              <span className="animate-pulse">●</span>
+              <b>Идёт запись</b>
+              <span className="tabular-nums">{String(Math.floor(elapsed / 60000)).padStart(2, "0")}:{String(Math.floor(elapsed / 1000) % 60).padStart(2, "0")}</span>
+              {micName && <span className="truncate opacity-90">{micName}</span>}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <label htmlFor="mic" className="text-slate-600">Микрофон</label>
+            <select id="mic" disabled={recording || testing} value={deviceId} onChange={(e) => setDeviceId(e.target.value)} className="min-w-0 max-w-full rounded border bg-white px-2 py-1 sm:max-w-sm">
+              <option value="">Системный по умолчанию</option>
+              {inputs.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+            </select>
+            <button onClick={refreshInputs} disabled={recording || testing} className="rounded border px-3 py-1 disabled:opacity-50">Обновить список</button>
+            <button onClick={testing ? stopTest : startTest} disabled={recording} className="rounded border px-3 py-1 disabled:opacity-50">
+              {testing ? "Остановить проверку" : "Проверить микрофон"}
+            </button>
+            {(recording || testing) && (
+              <span className="flex items-center gap-2">
+                <span role="meter" aria-label="Уровень звука" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(level * 100)} className="block h-2 w-32 overflow-hidden rounded bg-slate-200">
+                  <span className="block h-full bg-teal-500" style={{ width: `${Math.round(level * 100)}%` }} />
+                </span>
+                {testing && micName && <span className="truncate text-slate-500">{micName}</span>}
+              </span>
+            )}
+          </div>
+          {notice && <p role="alert" className="rounded bg-amber-50 p-2 text-sm text-amber-900">{notice}</p>}
+          {perm === "denied" && <p className="text-sm text-red-600">Браузер запретил микрофон для этого сайта. Нажмите на значок слева от адреса и разрешите микрофон, затем обновите страницу.</p>}
+          {recording && silentFor > 8000 && <p role="alert" className="rounded bg-amber-50 p-2 text-sm text-amber-900">Звука нет уже {Math.floor(silentFor / 1000)} с. Проверьте, что микрофон или гарнитура не выключены и выбран нужный микрофон.</p>}
+          {testing && silentFor > 4000 && <p className="text-sm text-amber-800">Шкала не движется. Скажите что-нибудь; если она так и стоит, выберите другой микрофон.</p>}
           <div className="flex flex-wrap items-center gap-3">
             <button onClick={recording ? stop : start} className={`w-full rounded px-4 py-3 text-base text-white sm:w-auto sm:py-2 sm:text-sm ${recording ? "bg-red-600" : "bg-teal-600"}`}>
               {recording ? "■ Стоп" : "● Начать запись"}
