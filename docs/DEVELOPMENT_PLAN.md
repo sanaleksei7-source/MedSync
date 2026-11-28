@@ -27,7 +27,7 @@ Legend: ✅ done · 🟡 partly done · ⬜ not started · 🚫 waiting on the o
 | Stage | Status | Steps done / total | Notes |
 |---|---|---|---|
 | 0 — Housekeeping and decisions | 🟡 In progress | 2 / 7 | 0.1 CI result unchecked; 0.5 and 0.7 need the owner; 0.3 waits on the owner; 0.4 is a new question about laptops |
-| 1 — Laptop web app | ⬜ Not started | 0 / 6 | 1.3 has a built capture path (works in Chrome, not tested with a real laptop microphone); the rest not started |
+| 1 — Laptop web app | 🟡 In progress | 0 / 6 | 1.1 built and checked at 1366×768 and 1920×1080 for the main screens (other screens still to check); 1.3 has a built capture path (works in Chrome, not tested with a real laptop microphone); the rest not started |
 | 2 — Speech quality | 🟡 In progress | 1 / 8 | 2.1 done: bigger model is clearly better (18 % word errors, 4/10 drugs) but too slow on CPU (about 7× real time), so the GPU test (2.3) is now the key question. `docs/ASR_DESIGN.md` sections 9 and 9.1 |
 | 3 — Real server foundation | 🟡 In progress | 3 / 7 | 3.1, 3.3 and 3.6 done; 3.4 built, waits on external write-once storage; 3.5 built, waits on review; 3.7 prepared, waits on the host; 3.2 built and tested on PGlite, waits on hosting choice (legal answer) to finish on a real PostgreSQL server |
 | 4 — Clinic deployment on laptops | ⬜ Not started | 0 / 6 | Proposed 2026-11-28; needs the answer to 0.4 |
@@ -42,6 +42,7 @@ Evidence: 0.1 — all tests, the build and the secret scan passed before commit 
 ### Changelog
 | Date | Change |
 |---|---|
+| 2026-11-28 | Step 1.1 built (not finished): laptop layout for the main screens, checked in the browser at 1366×768 and 1920×1080 — wider content, visit screen with transcript in view and an always-visible sign bar, larger small buttons, keyboard focus on facts. Other screens still to check. Build and secret scan pass |
 | 2026-11-28 | Goal changed by the owner from a mobile app to a web app for laptops. Plan rewritten: Stage 1 and Stage 4 replaced with laptop work, phone and native-app steps moved to the paused section, mobile risks and timeline updated. No code changed. Also recorded the OneDrive/PGlite startup problem and its fix |
 | 2026-11-26 | Plan written. Stage 0: pending work committed and pushed; recordings moved out of the project; `.gitignore` bug fixed (the `data/` rule also hid `src/data/`); legal list extended with 7 mobile questions (now 31); drug formulary template created. Owner's answers recorded: no Mac, phones over the internet, keep `dist/` |
 | 2026-11-27 | Step 3.2 built: database layer (PostgreSQL via PGlite for dev/tests, `pg` for production), field encryption, migrations, backup/restore and restore drill; `docs/DB_OPERATIONS.md` |
@@ -61,7 +62,7 @@ How this is maintained: whenever a step moves, its Status cell, the stage counts
 | 0.2 | Move the real voice recordings out of the OneDrive project folder (`docs/recordings/`) | Owner | Folder not inside the project | ✅ 2026-11-26 |
 | 0.3 | Turn on branch protection for `main` on GitHub | Owner | Settings → Branches rule exists | 🚫 owner |
 | 0.4 | Answer: which laptops and browsers do the doctors use (Windows? Chrome or Edge?), and where should the server and speech service run: on each laptop, on one clinic computer, or on an in-country server? Is the project folder allowed to move out of OneDrive? | Owner | Answers recorded in `docs/DEPLOY.md` | ⬜ |
-| 0.5 | Send `docs/LEGAL_QUESTIONS_RU.md` to a lawyer (the 7 mobile and app-store questions can be skipped for now) | Owner | Lawyer has the list; follow-up date set | 🟡 list ready (31 questions); owner to send |
+| 0.5 | Send `docs/LEGAL_QUESTIONS_RU.md` to a lawyer | Owner | Lawyer has the list; follow-up date set | 🟡 list ready and updated 2026-11-28 for laptops (31 questions; the 7 mobile ones moved to a "postponed" appendix and replaced by 7 laptop questions); owner to send |
 | 0.6 | Get the clinic's real drug formulary (names, forms, doses) as a spreadsheet | Owner | File available to replace the demo list | 🟡 template ready; owner to supply formulary |
 | 0.7 | Clean the project folder: remove unneeded files, fix ignore rules, keep voice data out of the repository | Claude, owner confirms deletions | Only needed files remain; scan rejects audio and secrets | ✅ 2026-11-26 `.gitignore` bug fixed, recordings moved out; owner chose to keep `dist/` |
 
@@ -71,7 +72,7 @@ Can run in parallel with Stages 0 and 2. Target: current Chrome and Edge on Wind
 
 | # | Step | Who | Done when | Status |
 |---|---|---|---|---|
-| 1.1 | Laptop layout for every screen (login, home, patients, visit, review, history): transcript and document side by side, no sideways scroll at 1366×768, readable at 1920×1080 | Claude | Checked in the browser at both sizes; keyboard-only use works | ⬜ (the responsive layout from the phone work exists, but has not been checked at these sizes) |
+| 1.1 | Laptop layout for every screen (login, home, patients, visit, review, history): transcript and document side by side, no sideways scroll at 1366×768, readable at 1920×1080 | Claude | Checked in the browser at both sizes; keyboard-only use works | 🟡 Built 2026-11-28 and checked in the browser at 1366×768 and 1920×1080: content width raised from 1024 to 1280 px; on the visit screen the transcript stays in view (own scroll, viewport height) beside the document and the "Подписать ЭЦП" bar is always visible; small buttons enlarged; facts and the desktop tabs reachable by keyboard (focusing a fact highlights its source line; `aria-current` on tabs). No sideways scroll on home, patients, visit and history at either size. **Not yet checked:** the signed-document screen, live-recording page, account page and the admin and auditor screens at laptop sizes; a full keyboard-only visit (that is step 1.5) |
 | 1.2 | Shared-laptop safety: automatic sign-out after idle time, sign-out clears everything held in the page, nothing patient-related kept in browser storage | Claude | Tests pass; checked on a second user logging in on the same browser | ⬜ |
 | 1.3 | Microphone path on Windows laptops: choose the input device, clear permission and "recording" indicator, handle a unplugged or busy microphone, keep the transcript text if the page is interrupted | Claude | Works in Chrome and Edge with the built-in and a headset microphone | 🟡 Capture exists (`src/audio/capture.ts`, 16 kHz, resampler with tests, interruption handling, Wake Lock) and works in Chrome; not tested with a real laptop microphone or in Edge, and no device chooser yet |
 | 1.4 | Supported-browser check: a clear message for unsupported or too-old browsers, and a short list of what is tested | Claude | Page shows the message; list in `docs/DEPLOY.md` | ⬜ |
