@@ -11,6 +11,9 @@ export interface AlertConfig {
   cooldownMs: number;     // повторную тревогу по тому же правилу и ключу не поднимаем чаще
   deniedLimit: number;    // отказов в доступе одному пользователю за окно
   loginFailLimit: number; // неудачных входов под одним именем за окно
+  stuffingLimit: number;  // неудачных входов с одного адреса за окно (перебор по многим именам)
+  stuffingUsers: number;  // ...и хотя бы столько разных имён
+  failuresBeforeSuccess: number; // успешный вход после стольких неудач под тем же именем — повод проверить
   readLimit: number;      // чтений карт и списков одним пользователем за окно
   workHours: [number, number]; // [с, до) по местному времени клиники
   utcOffsetHours: number; // сдвиг местного времени от UTC (Кыргызстан: +6)
@@ -21,6 +24,9 @@ export const DEFAULT_ALERTS: AlertConfig = {
   cooldownMs: 10 * 60_000,
   deniedLimit: 5,
   loginFailLimit: 10,
+  stuffingLimit: 20,
+  stuffingUsers: 3,
+  failuresBeforeSuccess: 3,
   readLimit: 100,
   workHours: [6, 22],
   utcOffsetHours: 6,
@@ -33,6 +39,14 @@ const PATIENT_DATA = new Set(["visit.read", "visit.list", "patient.list", "visit
 export class AlertMonitor {
   private hits = new Map<string, number[]>();
   private last = new Map<string, number>();
+  private stuffing = new Map<string, { t: number; user: string }[]>(); // адрес → неудачные входы
+  private knownIps = new Map<string, Set<string>>(); // имя → адреса прежних успешных входов
+
+  /** Загружает недавнюю историю (после перезапуска), не поднимая по ней тревог. */
+  warm(events: AuditEvent[]) {
+    for (const e of events) this.observe(e);
+    this.last.clear();
+  }
   constructor(private cfg: AlertConfig = DEFAULT_ALERTS) {}
 
   private count(bucket: string, t: number): number {
@@ -66,6 +80,28 @@ export class AlertMonitor {
       const user = String(e.detail?.user ?? "?");
       const n = this.count(`loginfail|${user}`, t);
       if (n >= c.loginFailLimit) out.push(this.raise("login.fail.burst", user, n, `Подбор пароля: ${n} неудачных входов за ${c.windowMs / 60000} мин`, t));
+      const ip = e.detail?.ip;
+      if (typeof ip === "string") {
+        const list = (this.stuffing.get(ip) ?? []).filter((x) => t - x.t < c.windowMs);
+        list.push({ t, user });
+        this.stuffing.set(ip, list);
+        const users = new Set(list.map((x) => x.user)).size;
+        if (list.length >= c.stuffingLimit && users >= c.stuffingUsers)
+          out.push(this.raise("login.stuffing", ip, list.length, `Перебор учётных записей с одного адреса: ${list.length} неудачных входов под ${users} именами`, t));
+      }
+    }
+    if (e.action === "login.ok") {
+      const user = String(e.detail?.user ?? e.actor);
+      const fails = (this.hits.get(`loginfail|${user}`) ?? []).filter((x) => t - x < c.windowMs).length;
+      if (fails >= c.failuresBeforeSuccess) out.push(this.raise("login.after.failures", user, fails, `Успешный вход после ${fails} неудачных попыток: проверьте, что входил сам владелец`, t));
+      const ip = e.detail?.ip;
+      if (typeof ip === "string") {
+        const seen = this.knownIps.get(user) ?? new Set<string>();
+        if (seen.size > 0 && !seen.has(ip)) out.push(this.raise("login.new.ip", `${user}@${ip}`, 1, "Вход с адреса, с которого этот пользователь раньше не входил", t));
+        seen.add(ip);
+        if (seen.size > 50) seen.delete(seen.values().next().value as string); // память ограничена
+        this.knownIps.set(user, seen);
+      }
     }
     // Экстренный доступ: тревога на каждый случай, чтобы аудитор разобрал его (кто, чья карта, какая причина).
     if (e.action === "breakglass.start") out.push(this.raise("breakglass", `${e.actor}>${e.target ?? "?"}`, 1, "Экстренный доступ к карте пациента", t));

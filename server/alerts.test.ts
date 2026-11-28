@@ -44,6 +44,34 @@ check("refresh token reuse alerts at once", new AlertMonitor().observe(ev(0, "to
 check("alerts and system records never raise alerts", new AlertMonitor().observe({ time: at(0), actor: "system", action: "alert.denied.burst" }).length === 0 && new AlertMonitor().observe(ev(0, "alert.read.burst")).length === 0);
 check("an unreadable time is ignored", new AlertMonitor().observe({ time: "not a date", actor: "doc1", action: "visit.denied" }).length === 0);
 
+// --- аномалии входа (шаг 3.7) ---
+{
+  const m = new AlertMonitor();
+  const fails = Array.from({ length: 20 }, (_, i) => m.observe(ev(0, "login.fail", "anonymous", { user: `u${i % 4}`, ip: "tagA" }))).flat();
+  check("20 failed logins from one address under several names raise a stuffing alert", fails.some((a) => a.rule === "login.stuffing" && a.key === "tagA"));
+  const one = new AlertMonitor();
+  const same = Array.from({ length: 20 }, () => one.observe(ev(0, "login.fail", "anonymous", { user: "u1", ip: "tagB" }))).flat();
+  check("many failures for one name from one address are password guessing, not stuffing", !same.some((a) => a.rule === "login.stuffing") && same.some((a) => a.rule === "login.fail.burst"));
+}
+{
+  const m = new AlertMonitor();
+  [0, 1, 2].forEach((i) => m.observe(ev(i, "login.fail", "anonymous", { user: "doc1", ip: "x" })));
+  check("a successful login right after 3 failures raises an alert", m.observe(ev(3, "login.ok", "u-doc1", { user: "doc1", ip: "x" })).some((a) => a.rule === "login.after.failures" && a.key === "doc1"));
+  const ok = new AlertMonitor();
+  ok.observe(ev(0, "login.fail", "anonymous", { user: "doc1", ip: "x" }));
+  check("one typo before a login is not an alert", !ok.observe(ev(1, "login.ok", "u-doc1", { user: "doc1", ip: "x" })).some((a) => a.rule === "login.after.failures"));
+}
+{
+  const m = new AlertMonitor();
+  const first = m.observe(ev(0, "login.ok", "u-doc1", { user: "doc1", ip: "home" }));
+  const again = m.observe(ev(1, "login.ok", "u-doc1", { user: "doc1", ip: "home" }));
+  const fresh = m.observe(ev(2, "login.ok", "u-doc1", { user: "doc1", ip: "elsewhere" }));
+  check("the very first login is not 'new address'; a repeat is not; a different address is", !first.length && !again.length && fresh.some((a) => a.rule === "login.new.ip" && a.key === "doc1@elsewhere"));
+  const w = new AlertMonitor();
+  w.warm([ev(0, "login.ok", "u-doc1", { user: "doc1", ip: "home" }), ...Array.from({ length: 6 }, (_, i) => ev(i, "visit.denied"))]);
+  check("after a restart, history is loaded without raising old alerts, and known addresses are remembered", w.observe(ev(9, "login.ok", "u-doc1", { user: "doc1", ip: "home" })).length === 0 && w.observe(ev(9, "login.ok", "u-doc1", { user: "doc1", ip: "other" })).some((a) => a.rule === "login.new.ip"));
+}
+
 let bad = 0;
 for (const [n, ok] of t) if (!ok) { bad++; console.error("FAIL", n); }
 console.log(bad ? `BAD alerts (${bad}/${t.length})` : `ok alerts (${t.length})`);

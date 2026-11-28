@@ -24,6 +24,9 @@ const alertLabel: Record<string, string> = {
   "off.hours": "Работа ночью",
   "breakglass": "Экстренный доступ к карте",
   "account.verify.burst": "Подбор при смене пароля",
+  "login.stuffing": "Перебор учётных записей с одного адреса",
+  "login.after.failures": "Вход после неудачных попыток",
+  "login.new.ip": "Вход с нового адреса",
 };
 
 const editLabel: Record<string, string> = { asr: "распознано", add: "добавлено вручную", edit: "исправлено", delete: "удалено", speaker: "сменён говорящий" };

@@ -14,6 +14,8 @@ import { migrate } from "./db/migrate";
 import { PgVisitStore } from "./db/visit-store";
 import { AuditWriter, importAudit, loadAudit } from "./db/audit-store";
 import { importUsers, loadUsers, saveUser } from "./db/user-store";
+import { notifierFromEnv } from "./notify";
+import { createHash } from "node:crypto";
 
 const USERS_FILE = "data/users.json";
 const AUDIT_FILE = "data/audit.log";
@@ -57,6 +59,13 @@ if (users.length === 0) {
   users = await loadUsers(db, ring);
 }
 
+// Работа в интернете (шаг 3.7, docs/DEPLOY.md): PUBLIC_ORIGIN — адрес сайта, например https://medsync.example.kg.
+// Сервер слушает только 127.0.0.1, снаружи к нему ходит обратный прокси (deploy/Caddyfile), он же даёт https.
+const publicOrigin = process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN) : null;
+if (publicOrigin && publicOrigin.protocol !== "https:") { console.error("PUBLIC_ORIGIN должен начинаться с https://"); process.exit(1); }
+const onAlert = notifierFromEnv(process.env); // проверяет адреса и формат при запуске
+if (publicOrigin) console.log(`Публичный адрес: ${publicOrigin.origin}. Тревоги ${onAlert ? "отправляются" : "НЕ отправляются (не задан ALERT_WEBHOOK_URL или ALERT_TELEGRAM_*)"}.`);
+
 const handler = createHandler({
   users,
   sessions: new SessionStore(),
@@ -74,8 +83,13 @@ const handler = createHandler({
       throw new Error("Не задан ANTHROPIC_API_KEY. Создайте файл .env (см. README) и перезапустите сервер.");
     return extractDraft(client, docTitle, sectionTitles, lines);
   },
-  allowedOrigins: process.env.ALLOWED_ORIGINS?.split(",").map((o) => o.trim()) ?? DEFAULT_ORIGINS,
-  secureCookie: process.env.NODE_ENV === "production",
+  allowedOrigins: [...(process.env.ALLOWED_ORIGINS?.split(",").map((o) => o.trim()) ?? DEFAULT_ORIGINS), ...(publicOrigin ? [publicOrigin.origin] : [])],
+  ...(publicOrigin ? { allowedHosts: [publicOrigin.host, "127.0.0.1:8787", "localhost:8787"] } : {}),
+  trustProxy: process.env.TRUST_PROXY === "1" || publicOrigin !== null,
+  hsts: publicOrigin !== null,
+  ipKey: createHash("sha256").update(`ip-tag:${process.env.DATA_KEYS ?? ""}`).digest("hex"),
+  ...(onAlert ? { onAlert } : {}),
+  secureCookie: process.env.NODE_ENV === "production" || publicOrigin !== null,
   dummyHash: await hashPassword("dummy-password-for-timing"),
 });
 
@@ -86,5 +100,8 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ error: "Ошибка сервера" }));
   });
 });
-server.requestTimeout = 120_000;
+server.requestTimeout = 120_000; // распознавание длинного сегмента
+server.headersTimeout = 15_000; // медленная отправка заголовков (slowloris) обрывается быстро
+server.keepAliveTimeout = 5_000;
+server.maxConnections = 1000;
 server.listen(8787, "127.0.0.1", () => console.log("MedSync API on http://127.0.0.1:8787"));

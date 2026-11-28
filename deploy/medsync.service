@@ -1,0 +1,37 @@
+# systemd: сервер MedSync. Установка: docs/DEPLOY.md.
+[Unit]
+Description=MedSync API
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=medsync
+Group=medsync
+WorkingDirectory=/srv/medsync
+# Секреты (DATA_KEYS, ANTHROPIC_API_KEY, DATABASE_URL, ALERT_*) — только в этом файле, права 600, владелец root.
+EnvironmentFile=/etc/medsync/env
+ExecStart=/usr/bin/node /srv/medsync/node_modules/tsx/dist/cli.mjs server/index.ts
+Restart=on-failure
+RestartSec=5
+
+# Ограничения: служба не может менять систему, видит только свою папку данных.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/srv/medsync/data
+UMask=0077
+LimitNOFILE=8192
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

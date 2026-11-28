@@ -27,8 +27,9 @@ t.push(["apple touch icon is 180x180", pngSize("public/icons/apple-touch-icon.pn
 t.push(["index.html links manifest, apple icon, theme color", html.includes('rel="manifest"') && html.includes("apple-touch-icon") && html.includes('name="theme-color"')]);
 
 // service worker: никакого кэширования данных
-t.push(["sw never stores responses", !/cache\.put|addAll|cache\.add\(.*req|\.put\(/i.test(sw.replace(/c\.add\(OFFLINE_URL\)/, ""))]);
-t.push(["sw only handles page navigations", /req\.mode !== "navigate"\) return/.test(sw)]);
+t.push(["sw never stores responses (only the fixed offline page and its stylesheet)", !/cache\.put|cache\.add\(.*req|\.put\(/i.test(sw) && /const OFFLINE_FILES = \["\/offline\.html", "\/offline\.css"\];/.test(sw) && (sw.match(/addAll\(/g) ?? []).length === 1 && /c\.addAll\(OFFLINE_FILES\)/.test(sw)]);
+t.push(["sw only handles page navigations and the offline stylesheet", /req\.mode !== "navigate"\) \{/.test(sw) && /pathname === "\/offline\.css"\) event\.respondWith/.test(sw) && (sw.match(/respondWith/g) ?? []).length === 2]);
+t.push(["offline page has no inline script or style (strict CSP)", !/<script|<style|onclick=|style=/i.test(read("public/offline.html")) && /href="\/offline\.css"/.test(read("public/offline.html"))]);
 t.push(["sw does not mention the API", !sw.includes("/api")]);
 t.push(["offline page exists and says nothing is stored", existsSync("public/offline.html") && /не хранятся/.test(read("public/offline.html"))]);
 t.push(["main.tsx registers sw only in production over a secure context", /import\.meta\.env\.PROD/.test(read("src/main.tsx")) && /isSecureContext/.test(read("src/main.tsx"))]);
